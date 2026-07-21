@@ -1,0 +1,102 @@
+import hashlib
+import hmac
+import json
+from pathlib import Path
+
+from fastapi.testclient import TestClient
+
+from mua_bot.app import create_app
+from mua_bot.config import Settings
+
+
+def app_settings(tmp_path: Path) -> Settings:
+    return Settings.model_validate(
+        {
+            "app": {"database_path": str(tmp_path / "app.db"), "dry_run": True},
+            "qq": {
+                "managed_group_ids": ["g1"],
+                "administrator_qq_ids": ["a1"],
+                "webhook_secret": "secret",
+            },
+            "moderation": {"enabled": False},
+            "announcements": {"enabled": False},
+            "retention": {"enabled": False},
+        }
+    )
+
+
+def test_health_and_signed_webhook(tmp_path: Path) -> None:
+    body = json.dumps({"post_type": "meta_event"}).encode()
+    signature = "sha1=" + hmac.new(b"secret", body, hashlib.sha1).hexdigest()
+
+    with TestClient(create_app(app_settings(tmp_path))) as client:
+        assert client.get("/healthz").status_code == 200
+        assert "MUA-Bot Console" in client.get("/gui/").text
+        accepted = client.post(
+            "/webhooks/onebot",
+            content=body,
+            headers={"Content-Type": "application/json", "X-Signature": signature},
+        )
+        rejected = client.post(
+            "/webhooks/onebot",
+            content=body,
+            headers={"Content-Type": "application/json", "X-Signature": "sha1=bad"},
+        )
+
+    assert accepted.status_code == 202
+    assert rejected.status_code == 401
+
+
+def test_gui_forces_default_password_change(tmp_path: Path) -> None:
+    with TestClient(create_app(app_settings(tmp_path))) as client:
+        login = client.post(
+            "/api/gui/auth/login",
+            json={"username": "admin", "password": "muaadmin"},
+        )
+        assert login.status_code == 200
+        session = login.json()
+        assert session["must_change_password"] is True
+
+        blocked = client.get("/api/gui/dashboard")
+        assert blocked.status_code == 403
+
+        changed = client.post(
+            "/api/gui/auth/password",
+            headers={"X-CSRF-Token": session["csrf_token"]},
+            json={
+                "current_password": "muaadmin",
+                "new_password": "a-new-secure-password",
+            },
+        )
+        assert changed.status_code == 200
+        assert client.get("/api/gui/dashboard").status_code == 200
+
+
+def test_gui_saves_and_hot_reloads_settings(tmp_path: Path, monkeypatch) -> None:
+    config_path = tmp_path / "config.yaml"
+    monkeypatch.setenv("MUA_CONFIG", str(config_path))
+    with TestClient(create_app(app_settings(tmp_path))) as client:
+        login = client.post(
+            "/api/gui/auth/login",
+            json={"username": "admin", "password": "muaadmin"},
+        ).json()
+        client.post(
+            "/api/gui/auth/password",
+            headers={"X-CSRF-Token": login["csrf_token"]},
+            json={
+                "current_password": "muaadmin",
+                "new_password": "a-new-secure-password",
+            },
+        )
+        config = client.get("/api/gui/settings").json()["config"]
+        config["app"]["environment"] = "gui-test"
+
+        saved = client.put(
+            "/api/gui/settings",
+            headers={"X-CSRF-Token": login["csrf_token"]},
+            json={"config": config},
+        )
+
+        assert saved.status_code == 200
+        assert client.get("/api/gui/dashboard").json()["environment"] == "gui-test"
+        assert config_path.exists()

@@ -1,0 +1,139 @@
+app:
+  environment: development
+  host: 0.0.0.0
+  port: 8080
+  timezone: Asia/Shanghai
+  log_level: INFO
+  database_path: data/mua-bot.db
+  # 生产环境请通过 MUA_APP__ADMIN_API_TOKEN 注入随机长令牌。
+  admin_api_token: ""
+  # 首次联调务必保持 true；确认收发链路后再关闭。
+  dry_run: true
+
+qq:
+  enabled: true
+  # Docker 内连接同 compose 的 NapCat 时可改为 http://qq-bridge:3000
+  onebot_base_url: http://host.docker.internal:3000
+  access_token: ""
+  webhook_secret: ""
+  request_timeout_seconds: 15
+  webui_base_url: http://qq-bridge:6099
+  # 留空时 GUI 自动使用当前浏览器主机名和 webui_public_port。
+  webui_public_url: ""
+  webui_public_port: 6099
+  managed_group_ids:
+    - "123456789"
+  administrator_qq_ids:
+    - "10001"
+  # 不同 OneBot 实现的扩展动作名可能不同，按顺序尝试。
+  announcement_actions:
+    - get_group_notice
+    - _get_group_notice
+
+llm:
+  # rules 可离线联调；生产建议切到 openai_compatible 并配置 Agnes AI。
+  driver: rules
+  base_url: https://your-agnes-endpoint.example/v1
+  api_key: ""
+  model: your-agnes-model
+  timeout_seconds: 60
+  temperature: 0
+  max_retries: 2
+  # 如果 Agnes 端点不接受 OpenAI response_format 参数，改为 false。
+  json_response_format: true
+
+join_approval:
+  enabled: true
+  # 首次上线保持 false，观察审核日志后再开启。
+  auto_approve: false
+  auto_reject: false
+  minimum_confidence: 0.88
+  policy: >-
+    申请者必须说明加入目的、所在服务器或组织，并明确同意群规。内容模糊、身份无法
+    判断、疑似广告或规避审核时转人工。不得根据性别、地域等无关个人属性作决定。
+  required_keywords:
+    - 同意群规
+  forbidden_keywords:
+    - 代充
+    - 刷单
+
+moderation:
+  enabled: true
+  interval_minutes: 30
+  window_minutes: 5
+  risk_threshold: 0.7
+  max_messages_per_run: 300
+  policy: >-
+    识别违法违规、涉政、色情、仇恨或群体对立、人身攻击、骚扰、诈骗、泄露隐私及
+    其他违反群规的内容。结合上下文，普通新闻讨论、反驳违规观点或引用不得仅凭关键
+    词判违规。机器人只通知管理员，不自动禁言或踢人。
+  # 仅供 rules 离线模式联调；真实生产请依赖模型复核上下文。
+  rule_keywords:
+    scam:
+      - 刷单
+      - 返利
+    harassment:
+      - 人肉
+
+announcements:
+  enabled: true
+  sync_interval_minutes: 30
+  sync_on_startup: true
+
+feishu:
+  enabled: false
+  driver: disabled
+  # 填写当前飞书 CLI 的实际可执行文件。CLI 版本接口变化由下面的 argv 模板隔离。
+  executable: feishu
+  timeout_seconds: 60
+  search_prefixes:
+    - "搜索 "
+    - "查询 "
+    - "/search "
+  max_search_results: 5
+  # 模板只填写 executable 后面的参数；每项是独立 argv，不经过 shell。
+  # archive_announcement 必须接受公告字段或 {payload_json}；search 必须输出 JSON，
+  # 格式为 [{title,snippet,url}] 或 {items:[...]}。按安装版本的 `feishu --help` 修改。
+  command_templates: {}
+  # 示例（不是对所有 CLI 版本都适用）：
+  # command_templates:
+  #   archive_announcement:
+  #     - bitable
+  #     - record
+  #     - create
+  #     - --json
+  #     - "{payload_json}"
+  #   search:
+  #     - search
+  #     - --query
+  #     - "{query}"
+  #     - --limit
+  #     - "{limit}"
+  #     - --output
+  #     - json
+  #   login: ["auth", "login", "--output", "json"]
+  #   logout: ["auth", "logout", "--output", "json"]
+  #   doctor: ["auth", "status", "--output", "json"]
+  # 公告可能超过系统命令行长度。包装器支持从 stdin 读取 JSON 时，设为 true，并在模板中
+  # 使用类似 `--json -` 的参数；此时不必引用 {payload_json}。
+  archive_payload_stdin: false
+  extra_environment: {}
+
+runtime:
+  event_workers: 2
+  shutdown_grace_seconds: 15
+
+retention:
+  enabled: true
+  message_days: 30
+  join_request_days: 180
+  moderation_run_days: 365
+  audit_days: 365
+
+gui:
+  enabled: true
+  bootstrap_username: admin
+  bootstrap_password: muaadmin
+  session_hours: 12
+  # 直接 HTTP 访问时保持 false；经 HTTPS 反向代理后改为 true。
+  secure_cookie: false

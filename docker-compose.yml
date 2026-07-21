@@ -1,0 +1,41 @@
+services:
+  mua-bot:
+    build:
+      context: .
+      args:
+        INSTALL_FEISHU_CLI: ${INSTALL_FEISHU_CLI:-false}
+        FEISHU_CLI_PACKAGE: ${FEISHU_CLI_PACKAGE:-}
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./data:/app/data
+      # 如飞书 CLI 将用户登录态保存在主目录，可按实际路径追加只读/读写挂载。
+      # - ./secrets/feishu:/home/mua/.config/feishu
+    ports:
+      - "${MUA_GUI_BIND_IP:-0.0.0.0}:${MUA_GUI_PORT:-6688}:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+
+  # 可选真人 QQ OneBot 侧车。首次使用需阅读所选镜像的当前文档并完成扫码登录。
+  # 非官方协议可能违反平台条款、触发风控或封号；建议使用专用低权限账号。
+  qq-bridge:
+    image: ${NAPCAT_IMAGE:-mlikiowa/napcat-docker:latest}
+    profiles: ["napcat"]
+    restart: unless-stopped
+    environment:
+      ACCOUNT: ${QQ_ACCOUNT:-}
+    volumes:
+      - ./data/napcat:/app/napcat/config
+      - ./data/qq:/app/.config/QQ
+    ports:
+      - "${NAPCAT_WEBUI_BIND_IP:-0.0.0.0}:${NAPCAT_WEBUI_PORT:-6099}:6099"
+      - "127.0.0.1:${ONEBOT_HTTP_PORT:-3000}:3000"

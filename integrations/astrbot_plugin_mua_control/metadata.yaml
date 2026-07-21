@@ -1,0 +1,11 @@
+name: astrbot_plugin_mua_control
+display_name: MUA-Bot Control
+desc: 从 AstrBot 安全地查询 MUA-Bot 状态并触发管理员任务。
+short_desc: MUA-Bot 管理控制面。
+author: MUA-Bot contributors
+version: 0.2.0
+repo: https://github.com/LYOfficial/MUA-Bot
+astrbot_version: ">=4.16,<5"
+support_platforms:
+  - aiocqhttp
+  - lark
