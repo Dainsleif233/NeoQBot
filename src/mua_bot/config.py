@@ -24,7 +24,7 @@ class AppConfig(BaseModel):
 
 class QQConfig(BaseModel):
     enabled: bool = True
-    onebot_base_url: str = "http://127.0.0.1:3000"
+    onebot_base_url: str = "http://qq-bridge:3000"
     access_token: str = ""
     webhook_secret: str = ""
     request_timeout_seconds: float = 15.0

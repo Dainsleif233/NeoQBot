@@ -12,8 +12,8 @@ app:
 
 qq:
   enabled: true
-  # Docker 内连接同 compose 的 NapCat 时可改为 http://qq-bridge:3000
-  onebot_base_url: http://host.docker.internal:3000
+  # Compose 内使用服务名；Windows 本地直连外部 NapCat 时可改为 http://127.0.0.1:3000。
+  onebot_base_url: http://qq-bridge:3000
   access_token: ""
   webhook_secret: ""
   request_timeout_seconds: 15

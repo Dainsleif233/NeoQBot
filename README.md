@@ -200,19 +200,53 @@ feishu:
 ## Ubuntu / Debian Docker 部署
 
 ```bash
-cp .env.example .env
-sudo install -d -m 700 -o 10001 -g 10001 \
-  /var/lib/docker/volumes/mua-bot-data/_data
-sudo install -d -m 700 \
-  /var/lib/docker/volumes/mua-bot-napcat-config/_data \
-  /var/lib/docker/volumes/mua-bot-qq-session/_data
-sudo install -d -m 700 -o 10001 -g 10001 \
-  /var/lib/docker/volumes/mua-bot-feishu-home/_data
-# 编辑端口等部署参数；密钥和业务配置可直接在 GUI 中完成
-docker compose build
-docker compose --profile napcat up -d
+docker compose up -d --build
+```
+
+`init-volumes` 一次性服务会自动创建绝对路径目录、设置 MUA-Bot 与飞书目录的 UID `10001`
+权限，然后退出；MUA-Bot 和 NapCat 会在它成功后自动启动。因此不再需要手工执行
+`mkdir`、`chown`，也不需要 `--profile napcat`。
+
+Compose 已为端口、路径和初始账号提供默认值，不创建 `.env` 也可以直接启动。需要修改
+端口、NapCat 镜像或安装飞书 CLI 时，再执行 `cp .env.example .env` 并编辑该文件。查看日志：
+
+```bash
 docker compose logs -f mua-bot
 ```
+
+### 端口说明
+
+当前 Compose 默认占用宿主机 3 个 TCP 端口：
+
+| 宿主机端口 | 默认监听地址 | 映射到容器 | 用途 | 外部可访问性 |
+|---:|---|---|---|---|
+| `6688` | `0.0.0.0` | `mua-bot:8080` | GUI、REST API、OneBot Webhook、健康检查和 OpenAPI | 默认可从网络访问 |
+| `6099` | `0.0.0.0` | `qq-bridge:6099` | NapCat WebUI、QQ 扫码登录与 NapCat 配置 | 默认可从网络访问 |
+| `6000` | `127.0.0.1` | `qq-bridge:3000` | OneBot HTTP API 的宿主机调试入口 | 仅宿主机本地可访问 |
+
+端口可在 `.env` 中修改：
+
+```dotenv
+MUA_GUI_BIND_IP=0.0.0.0
+MUA_GUI_PORT=6688
+NAPCAT_WEBUI_BIND_IP=0.0.0.0
+NAPCAT_WEBUI_PORT=6099
+ONEBOT_HTTP_PORT=6000
+```
+
+Docker 容器内部监听端口：
+
+| 容器/服务 | 容器内部端口 | 协议 | 用途 |
+|---|---:|---|---|
+| `mua-bot` | `8080` | TCP/HTTP | FastAPI、GUI、管理 API、Webhook、健康检查 |
+| `qq-bridge` | `3000` | TCP/HTTP | OneBot API，MUA-Bot 使用 `http://qq-bridge:3000` 访问 |
+| `qq-bridge` | `6099` | TCP/HTTP | NapCat WebUI |
+| `init-volumes` | 无 | — | 只负责初始化目录权限，完成后退出 |
+
+容器间通信不经过宿主机映射：MUA-Bot 调用 QQ 使用
+`http://qq-bridge:3000`；NapCat 向 MUA-Bot 推送事件使用
+`http://mua-bot:8080/webhooks/onebot`。飞书 CLI 和大模型调用只产生向外的 HTTPS 连接，
+不会额外监听宿主机端口。
 
 启动后访问：
 
@@ -225,7 +259,8 @@ docker compose logs -f mua-bot
   `/var/lib/docker/volumes/mua-bot-feishu-home/_data`；
 - OneBot Webhook 在 Compose 内仍使用 `http://mua-bot:8080/webhooks/onebot`。
 
-6688 和 6099 默认监听所有网卡，便于首次远程部署。生产环境应使用云防火墙限制来源，或在
+6688 和 6099 默认监听所有网卡，便于首次远程部署；6000 只监听 `127.0.0.1`。生产环境应
+使用云防火墙限制 6688/6099 的来源，或在
 `.env` 中把 `MUA_GUI_BIND_IP`、`NAPCAT_WEBUI_BIND_IP` 改为 `127.0.0.1` 后通过 SSH 隧道或
 HTTPS 反向代理访问。不同 NapCat 镜像版本的容器内路径可能变化，升级前必须核对其官方
 说明，并备份 `/var/lib/docker/volumes/mua-bot-napcat-config/_data` 与

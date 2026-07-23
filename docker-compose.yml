@@ -1,11 +1,32 @@
 services:
+  init-volumes:
+    image: mua-bot:local
+    pull_policy: never
+    user: "0:0"
+    restart: "no"
+    command:
+      - sh
+      - -ec
+      - |
+        chown -R 10001:10001 /mnt/mua-data /mnt/feishu-home
+        chmod 700 /mnt/mua-data /mnt/feishu-home /mnt/napcat-config /mnt/qq-session
+    volumes:
+      - /var/lib/docker/volumes/mua-bot-data/_data:/mnt/mua-data
+      - /var/lib/docker/volumes/mua-bot-feishu-home/_data:/mnt/feishu-home
+      - /var/lib/docker/volumes/mua-bot-napcat-config/_data:/mnt/napcat-config
+      - /var/lib/docker/volumes/mua-bot-qq-session/_data:/mnt/qq-session
+
   mua-bot:
+    image: mua-bot:local
     build:
       context: .
       args:
         INSTALL_FEISHU_CLI: ${INSTALL_FEISHU_CLI:-false}
         FEISHU_CLI_PACKAGE: ${FEISHU_CLI_PACKAGE:-}
     restart: unless-stopped
+    depends_on:
+      init-volumes:
+        condition: service_completed_successfully
     env_file:
       - path: .env
         required: false
@@ -29,8 +50,11 @@ services:
   # 非官方协议可能违反平台条款、触发风控或封号；建议使用专用低权限账号。
   qq-bridge:
     image: ${NAPCAT_IMAGE:-mlikiowa/napcat-docker:latest}
-    profiles: ["napcat"]
+    user: "${NAPCAT_UID:-0}:${NAPCAT_GID:-0}"
     restart: unless-stopped
+    depends_on:
+      init-volumes:
+        condition: service_completed_successfully
     environment:
       ACCOUNT: ${QQ_ACCOUNT:-}
     volumes:
@@ -38,4 +62,4 @@ services:
       - /var/lib/docker/volumes/mua-bot-qq-session/_data:/app/.config/QQ
     ports:
       - "${NAPCAT_WEBUI_BIND_IP:-0.0.0.0}:${NAPCAT_WEBUI_PORT:-6099}:6099"
-      - "127.0.0.1:${ONEBOT_HTTP_PORT:-3000}:3000"
+      - "127.0.0.1:${ONEBOT_HTTP_PORT:-6000}:3000"
