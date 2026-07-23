@@ -10,9 +10,9 @@ services:
       - path: .env
         required: false
     volumes:
-      - ./data:/app/data
-      # 如飞书 CLI 将用户登录态保存在主目录，可按实际路径追加只读/读写挂载。
-      # - ./secrets/feishu:/home/mua/.config/feishu
+      - /var/lib/docker/volumes/mua-bot-data/_data:/app/data
+      # 持久化飞书 CLI 可能写入 ~/.config、~/.local 等位置的真人账号登录态。
+      - /var/lib/docker/volumes/mua-bot-feishu-home/_data:/home/mua
     ports:
       - "${MUA_GUI_BIND_IP:-0.0.0.0}:${MUA_GUI_PORT:-6688}:8080"
     extra_hosts:
@@ -34,8 +34,8 @@ services:
     environment:
       ACCOUNT: ${QQ_ACCOUNT:-}
     volumes:
-      - ./data/napcat:/app/napcat/config
-      - ./data/qq:/app/.config/QQ
+      - /var/lib/docker/volumes/mua-bot-napcat-config/_data:/app/napcat/config
+      - /var/lib/docker/volumes/mua-bot-qq-session/_data:/app/.config/QQ
     ports:
       - "${NAPCAT_WEBUI_BIND_IP:-0.0.0.0}:${NAPCAT_WEBUI_PORT:-6099}:6099"
       - "127.0.0.1:${ONEBOT_HTTP_PORT:-3000}:3000"

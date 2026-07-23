@@ -201,9 +201,13 @@ feishu:
 
 ```bash
 cp .env.example .env
-mkdir -p data
-sudo chown -R 10001:10001 data
-chmod 700 data
+sudo install -d -m 700 -o 10001 -g 10001 \
+  /var/lib/docker/volumes/mua-bot-data/_data
+sudo install -d -m 700 \
+  /var/lib/docker/volumes/mua-bot-napcat-config/_data \
+  /var/lib/docker/volumes/mua-bot-qq-session/_data
+sudo install -d -m 700 -o 10001 -g 10001 \
+  /var/lib/docker/volumes/mua-bot-feishu-home/_data
 # 编辑端口等部署参数；密钥和业务配置可直接在 GUI 中完成
 docker compose build
 docker compose --profile napcat up -d
@@ -215,13 +219,20 @@ docker compose logs -f mua-bot
 - `http://服务器IP:6688/gui/`：MUA-Bot 管理后台；
 - 初始管理员：`admin` / `muaadmin`，首次登录强制修改密码；
 - `http://服务器IP:6099/`：NapCat WebUI，也可从 GUI 的“平台登录”打开；
-- 配置自动写入并持久化到 `data/config.yaml`；
+- 配置自动写入并持久化到
+  `/var/lib/docker/volumes/mua-bot-data/_data/config.yaml`；
+- 飞书 CLI 真人账号登录态持久化到
+  `/var/lib/docker/volumes/mua-bot-feishu-home/_data`；
 - OneBot Webhook 在 Compose 内仍使用 `http://mua-bot:8080/webhooks/onebot`。
 
 6688 和 6099 默认监听所有网卡，便于首次远程部署。生产环境应使用云防火墙限制来源，或在
 `.env` 中把 `MUA_GUI_BIND_IP`、`NAPCAT_WEBUI_BIND_IP` 改为 `127.0.0.1` 后通过 SSH 隧道或
-HTTPS 反向代理访问。不同 NapCat 镜像版本的卷路径和环境变量可能变化，升级前必须核对其
-官方说明并备份 `data/napcat`、`data/qq`。
+HTTPS 反向代理访问。不同 NapCat 镜像版本的容器内路径可能变化，升级前必须核对其官方
+说明，并备份 `/var/lib/docker/volumes/mua-bot-napcat-config/_data` 与
+`/var/lib/docker/volumes/mua-bot-qq-session/_data`。
+
+以上路径假设 `docker info --format '{{.DockerRootDir}}'` 输出 `/var/lib/docker`。如果服务器
+使用 rootless Docker 或自定义 `data-root`，请把 Compose 和命令中的前缀替换为实际目录。
 
 Docker 镜像默认不安装飞书 CLI。若官方 CLI 以 npm 包发布，可在 `.env` 中填写当前包名：
 
@@ -265,8 +276,10 @@ curl -X POST -H "Authorization: Bearer $TOKEN" \
 Docker 宿主机上将示例地址的 `8080` 替换为 `6688`。GUI 使用独立的管理员会话、HttpOnly
 Cookie 和 CSRF 校验，不依赖管理 API Token。
 
-SQLite 默认位于 `data/mua-bot.db`。备份时同时保留主文件以及可能存在的 `-wal`、`-shm`
-文件，或在停止服务后复制。生产环境建议用宿主机备份任务定期快照整个 `data` 目录。
+SQLite 在容器内位于 `/app/data/mua-bot.db`，Docker 宿主机对应
+`/var/lib/docker/volumes/mua-bot-data/_data/mua-bot.db`。备份时同时保留主文件以及可能存在的
+`-wal`、`-shm` 文件，或在停止服务后复制。生产环境建议定期快照整个
+`/var/lib/docker/volumes/mua-bot-data/_data` 目录。
 `retention` 配置会每日删除过期消息、申请、风控运行和审计日志；公告版本永久保留，除非
 管理员另行制定归档删除流程。
 
