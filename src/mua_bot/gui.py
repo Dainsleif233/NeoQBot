@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+# ruff: noqa: B008 - FastAPI dependency injection intentionally uses Depends in defaults.
 import asyncio
 import os
 import secrets
 import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Any
 
 from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, RedirectResponse
@@ -91,7 +92,7 @@ def register_gui(
     throttle = LoginThrottle()
 
     def current_session(
-        mua_session: Annotated[str | None, Cookie(alias="mua_session")] = None,
+        mua_session: str | None = Cookie(default=None, alias="mua_session"),
     ) -> GuiSession:
         session = get_container().auth.session(mua_session)
         if session is None:
@@ -99,22 +100,22 @@ def register_gui(
         return session
 
     def csrf_session(
-        session: Annotated[GuiSession, Depends(current_session)],
-        x_csrf_token: Annotated[str | None, Header()] = None,
+        session: GuiSession = Depends(current_session),
+        x_csrf_token: str | None = Header(default=None),
     ) -> GuiSession:
         if not x_csrf_token or not secrets.compare_digest(x_csrf_token, session.csrf_token):
             raise HTTPException(status_code=403, detail="CSRF 校验失败")
         return session
 
     def ready_admin(
-        session: Annotated[GuiSession, Depends(current_session)],
+        session: GuiSession = Depends(current_session),
     ) -> GuiSession:
         if session.must_change_password:
             raise HTTPException(status_code=403, detail="首次登录必须先修改默认密码")
         return session
 
     def ready_admin_csrf(
-        session: Annotated[GuiSession, Depends(csrf_session)],
+        session: GuiSession = Depends(csrf_session),
     ) -> GuiSession:
         if session.must_change_password:
             raise HTTPException(status_code=403, detail="首次登录必须先修改默认密码")
@@ -172,7 +173,7 @@ def register_gui(
 
     @app.get("/api/gui/auth/session")
     async def gui_session(
-        session: Annotated[GuiSession, Depends(current_session)],
+        session: GuiSession = Depends(current_session),
     ) -> dict[str, Any]:
         return {
             "username": session.username,
@@ -183,8 +184,8 @@ def register_gui(
     @app.post("/api/gui/auth/logout")
     async def gui_logout(
         response: Response,
-        _: Annotated[GuiSession, Depends(csrf_session)],
-        mua_session: Annotated[str | None, Cookie(alias="mua_session")] = None,
+        _: GuiSession = Depends(csrf_session),
+        mua_session: str | None = Cookie(default=None, alias="mua_session"),
     ) -> dict[str, bool]:
         get_container().auth.logout(mua_session)
         response.delete_cookie("mua_session", path="/")
@@ -193,7 +194,7 @@ def register_gui(
     @app.post("/api/gui/auth/password")
     async def gui_change_password(
         payload: PasswordPayload,
-        session: Annotated[GuiSession, Depends(csrf_session)],
+        session: GuiSession = Depends(csrf_session),
     ) -> dict[str, bool]:
         try:
             changed = await asyncio.to_thread(
@@ -211,7 +212,7 @@ def register_gui(
 
     @app.get("/api/gui/dashboard")
     async def gui_dashboard(
-        _: Annotated[GuiSession, Depends(ready_admin)],
+        _: GuiSession = Depends(ready_admin),
     ) -> dict[str, Any]:
         settings = get_settings()
         return {
@@ -226,14 +227,14 @@ def register_gui(
 
     @app.get("/api/gui/settings")
     async def gui_settings(
-        _: Annotated[GuiSession, Depends(ready_admin)],
+        _: GuiSession = Depends(ready_admin),
     ) -> dict[str, Any]:
         return {"config": get_settings().redacted_dict()}
 
     @app.put("/api/gui/settings")
     async def gui_save_settings(
         payload: SettingsPayload,
-        _: Annotated[GuiSession, Depends(ready_admin_csrf)],
+        _: GuiSession = Depends(ready_admin_csrf),
     ) -> dict[str, Any]:
         current = get_settings()
         try:
@@ -261,8 +262,8 @@ def register_gui(
     @app.get("/api/gui/records/{kind}")
     async def gui_records(
         kind: str,
-        _: Annotated[GuiSession, Depends(ready_admin)],
-        limit: Annotated[int, Query(ge=1, le=200)] = 50,
+        _: GuiSession = Depends(ready_admin),
+        limit: int = Query(default=50, ge=1, le=200),
     ) -> dict[str, Any]:
         try:
             records = get_container().database.recent_records(kind, limit)
@@ -273,7 +274,7 @@ def register_gui(
     @app.post("/api/gui/jobs/{job}")
     async def gui_run_job(
         job: str,
-        _: Annotated[GuiSession, Depends(ready_admin_csrf)],
+        _: GuiSession = Depends(ready_admin_csrf),
     ) -> dict[str, Any]:
         runtime = get_container().runtime
         actions = {
@@ -289,7 +290,7 @@ def register_gui(
 
     @app.get("/api/gui/integrations/qq")
     async def gui_qq_status(
-        _: Annotated[GuiSession, Depends(ready_admin)],
+        _: GuiSession = Depends(ready_admin),
     ) -> dict[str, Any]:
         try:
             status = await get_container().qq.doctor()
@@ -304,7 +305,7 @@ def register_gui(
 
     @app.get("/api/gui/integrations/feishu")
     async def gui_feishu_status(
-        _: Annotated[GuiSession, Depends(ready_admin)],
+        _: GuiSession = Depends(ready_admin),
     ) -> dict[str, Any]:
         try:
             return {"status": await get_container().feishu.doctor()}
@@ -314,7 +315,7 @@ def register_gui(
     @app.post("/api/gui/integrations/feishu/{action}")
     async def gui_feishu_action(
         action: str,
-        _: Annotated[GuiSession, Depends(ready_admin_csrf)],
+        _: GuiSession = Depends(ready_admin_csrf),
     ) -> dict[str, Any]:
         if action not in {"login", "logout"}:
             raise HTTPException(status_code=404, detail="未知飞书动作")
