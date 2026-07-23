@@ -29,6 +29,32 @@ qq:
   announcement_actions:
     - get_group_notice
     - _get_group_notice
+  # 多账号请在 GUI 中添加，或按下面的结构配置；bots 非空时优先于上面的单账号字段。
+  # 每个 NapCat 实例把反向 HTTP 地址设为 /webhooks/onebot/<bot-id>。
+  bots: []
+  # bots:
+  #   - id: join-worker
+  #     name: 入群管理 Bot
+  #     enabled: true
+  #     onebot_base_url: http://qq-join-bridge:3000
+  #     access_token: ""
+  #     webhook_secret: ""
+  #     webui_public_port: 6100
+  #     managed_group_ids: ["123456789"]
+  #     administrator_qq_ids: ["10001"]
+  #     announcement_actions: [get_group_notice, _get_group_notice]
+  #     tasks:
+  #       join_management:
+  #         enabled: true
+  #         detect_requests: true
+  #         execute_management: true
+  #         auto_approve: false
+  #         auto_reject: false
+  #         minimum_confidence: 0.88
+  #       message_detection:
+  #         enabled: false
+  #       announcement_sync:
+  #         enabled: false
 
 llm:
   # rules 可离线联调；生产建议切到 openai_compatible 并配置 Agnes AI。
@@ -118,6 +144,9 @@ feishu:
   # 使用类似 `--json -` 的参数；此时不必引用 {payload_json}。
   archive_payload_stdin: false
   extra_environment: {}
+  # 多飞书账号可分别设置 HOME/配置目录等环境变量来隔离 CLI 登录态。
+  # bots 非空时优先于上面的单账号字段。
+  bots: []
 
 runtime:
   event_workers: 2

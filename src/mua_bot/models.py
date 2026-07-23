@@ -11,6 +11,7 @@ def utc_now() -> datetime:
 
 
 class JoinRequest(BaseModel):
+    bot_id: str = "default"
     event_id: str
     flag: str
     group_id: str
@@ -28,6 +29,7 @@ class JoinDecision(BaseModel):
 
 
 class GroupMessage(BaseModel):
+    bot_id: str = "default"
     message_id: str
     group_id: str
     user_id: str
@@ -56,6 +58,7 @@ class ModerationResult(BaseModel):
 
 
 class Announcement(BaseModel):
+    bot_id: str = "default"
     announcement_id: str
     group_id: str
     title: str = ""

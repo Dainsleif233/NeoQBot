@@ -31,6 +31,33 @@ def test_message_idempotency_and_window_query(tmp_path: Path) -> None:
     )
 
 
+def test_same_message_id_isolated_between_bots(tmp_path: Path) -> None:
+    database = Database(tmp_path / "multi-bot.db")
+    database.initialize()
+    sent_at = datetime.now(UTC)
+
+    assert database.save_message(
+        GroupMessage(
+            bot_id="bot-a",
+            message_id="same",
+            group_id="g1",
+            user_id="u1",
+            text="from a",
+            sent_at=sent_at,
+        )
+    )
+    assert database.save_message(
+        GroupMessage(
+            bot_id="bot-b",
+            message_id="same",
+            group_id="g1",
+            user_id="u1",
+            text="from b",
+            sent_at=sent_at,
+        )
+    )
+
+
 def test_announcement_content_change_creates_version(tmp_path: Path) -> None:
     database = Database(tmp_path / "test.db")
     database.initialize()

@@ -47,6 +47,48 @@ def test_health_and_signed_webhook(tmp_path: Path) -> None:
     assert rejected.status_code == 401
 
 
+def test_bot_specific_webhook_uses_its_own_secret(tmp_path: Path) -> None:
+    settings = app_settings(tmp_path)
+    values = settings.model_dump()
+    values["qq"]["bots"] = [
+        {
+            "id": "observer",
+            "name": "Observer",
+            "webhook_secret": "observer-secret",
+            "managed_group_ids": ["g1"],
+            "administrator_qq_ids": ["a1"],
+        },
+        {
+            "id": "worker",
+            "name": "Worker",
+            "webhook_secret": "worker-secret",
+            "managed_group_ids": ["g1"],
+            "administrator_qq_ids": ["a1"],
+        },
+    ]
+    settings = Settings.model_validate(values)
+    body = json.dumps({"post_type": "meta_event"}).encode()
+    worker_signature = "sha1=" + hmac.new(
+        b"worker-secret", body, hashlib.sha1
+    ).hexdigest()
+
+    with TestClient(create_app(settings)) as client:
+        accepted = client.post(
+            "/webhooks/onebot/worker",
+            content=body,
+            headers={"Content-Type": "application/json", "X-Signature": worker_signature},
+        )
+        rejected = client.post(
+            "/webhooks/onebot/observer",
+            content=body,
+            headers={"Content-Type": "application/json", "X-Signature": worker_signature},
+        )
+
+    assert accepted.status_code == 202
+    assert accepted.json()["bot_id"] == "worker"
+    assert rejected.status_code == 401
+
+
 def test_gui_forces_default_password_change(tmp_path: Path) -> None:
     with TestClient(create_app(app_settings(tmp_path))) as client:
         login = client.post(

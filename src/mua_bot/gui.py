@@ -65,6 +65,18 @@ def _preserve_masked_secrets(candidate: dict[str, Any], current: Settings) -> di
             continue
         if section_value.get(key) in (None, "", "***"):
             section_value[key] = original
+    qq_section = candidate.setdefault("qq", {})
+    if isinstance(qq_section, dict) and isinstance(qq_section.get("bots"), list):
+        current_bots = {bot.id: bot for bot in current.effective_qq_bots()}
+        for incoming in qq_section["bots"]:
+            if not isinstance(incoming, dict):
+                continue
+            existing = current_bots.get(str(incoming.get("id", "")))
+            if existing is None:
+                continue
+            for key in ("access_token", "webhook_secret"):
+                if incoming.get(key) in (None, "", "***"):
+                    incoming[key] = getattr(existing, key)
     feishu = candidate.setdefault("feishu", {})
     if isinstance(feishu, dict):
         incoming_environment = feishu.get("extra_environment")
@@ -74,6 +86,21 @@ def _preserve_masked_secrets(candidate: dict[str, Any], current: Settings) -> di
             for key, value in list(incoming_environment.items()):
                 if value in (None, "", "***") and key in current.feishu.extra_environment:
                     incoming_environment[key] = current.feishu.extra_environment[key]
+        if isinstance(feishu.get("bots"), list):
+            current_bots = {bot.id: bot for bot in current.effective_feishu_bots()}
+            for incoming in feishu["bots"]:
+                if not isinstance(incoming, dict):
+                    continue
+                existing = current_bots.get(str(incoming.get("id", "")))
+                if existing is None:
+                    continue
+                environment = incoming.get("extra_environment")
+                if environment in (None, "***"):
+                    incoming["extra_environment"] = existing.extra_environment
+                elif isinstance(environment, dict):
+                    for key, value in list(environment.items()):
+                        if value in (None, "", "***") and key in existing.extra_environment:
+                            environment[key] = existing.extra_environment[key]
     app_section = candidate.setdefault("app", {})
     if not isinstance(app_section, dict):
         raise ValueError("app 配置必须是对象")
@@ -222,7 +249,17 @@ def register_gui(
             "queue_size": get_container().runtime.queue.qsize(),
             "counts": get_container().database.counts(),
             "diagnostics": settings.diagnostics(),
-            "managed_groups": settings.qq.managed_group_ids,
+            "managed_groups": settings.managed_group_ids(),
+            "bots": [
+                {
+                    "id": bot.id,
+                    "name": bot.name,
+                    "enabled": bot.enabled,
+                    "groups": bot.managed_group_ids,
+                    "tasks": bot.tasks.model_dump(mode="json"),
+                }
+                for bot in settings.effective_qq_bots()
+            ],
         }
 
     @app.get("/api/gui/settings")
@@ -275,52 +312,101 @@ def register_gui(
     async def gui_run_job(
         job: str,
         _: GuiSession = Depends(ready_admin_csrf),
+        bot_id: str | None = Query(default=None),
     ) -> dict[str, Any]:
         runtime = get_container().runtime
-        actions = {
-            "moderation": runtime.run_all_moderation,
-            "announcements": runtime.sync_all_announcements,
-            "maintenance": runtime.run_maintenance,
-        }
-        action = actions.get(job)
-        if action is None:
+        if job == "moderation":
+            result = (
+                await runtime.run_bot_moderation(bot_id)
+                if bot_id
+                else await runtime.run_all_moderation()
+            )
+        elif job == "announcements":
+            result = (
+                await runtime.sync_bot_announcements(bot_id)
+                if bot_id
+                else await runtime.sync_all_announcements()
+            )
+        elif job == "maintenance":
+            result = await runtime.run_maintenance()
+        else:
             raise HTTPException(status_code=404, detail="未知任务")
-        result = await action()
         return {"ok": True, "result": result}
 
     @app.get("/api/gui/integrations/qq")
     async def gui_qq_status(
         _: GuiSession = Depends(ready_admin),
+        bot_id: str | None = Query(default=None),
     ) -> dict[str, Any]:
-        try:
-            status = await get_container().qq.doctor()
-        except Exception as exc:
-            status = {"ok": False, "error": str(exc)}
         settings = get_settings()
+        bots = settings.effective_qq_bots()
+        if bot_id:
+            bots = [bot for bot in bots if bot.id == bot_id]
+            if not bots:
+                raise HTTPException(status_code=404, detail="未知 QQ Bot")
+        results = []
+        for bot in bots:
+            if not bot.enabled:
+                status = {"ok": True, "enabled": False}
+            else:
+                try:
+                    status = await get_container().qq_clients[bot.id].doctor()
+                except Exception as exc:
+                    status = {"ok": False, "error": str(exc)}
+            results.append(
+                {
+                    "id": bot.id,
+                    "name": bot.name,
+                    "enabled": bot.enabled,
+                    "status": status,
+                    "webhook_url": f"/webhooks/onebot/{bot.id}",
+                    "webui_public_url": bot.webui_public_url,
+                    "webui_public_port": bot.webui_public_port,
+                    "tasks": bot.tasks.model_dump(mode="json"),
+                }
+            )
+        primary = results[0]
         return {
-            "status": status,
-            "webui_public_url": settings.qq.webui_public_url,
-            "webui_public_port": settings.qq.webui_public_port,
+            "bots": results,
+            "status": primary["status"],
+            "webui_public_url": primary["webui_public_url"],
+            "webui_public_port": primary["webui_public_port"],
         }
 
     @app.get("/api/gui/integrations/feishu")
     async def gui_feishu_status(
         _: GuiSession = Depends(ready_admin),
+        bot_id: str | None = Query(default=None),
     ) -> dict[str, Any]:
-        try:
-            return {"status": await get_container().feishu.doctor()}
-        except Exception as exc:
-            return {"status": {"ok": False, "error": str(exc)}}
+        bots = get_settings().effective_feishu_bots()
+        if bot_id:
+            bots = [bot for bot in bots if bot.id == bot_id]
+            if not bots:
+                raise HTTPException(status_code=404, detail="未知飞书 Bot")
+        results = []
+        for bot in bots:
+            try:
+                status = await get_container().feishu_clients[bot.id].doctor()
+            except Exception as exc:
+                status = {"ok": False, "error": str(exc)}
+            results.append(
+                {"id": bot.id, "name": bot.name, "enabled": bot.enabled, "status": status}
+            )
+        return {"bots": results, "status": results[0]["status"]}
 
     @app.post("/api/gui/integrations/feishu/{action}")
     async def gui_feishu_action(
         action: str,
         _: GuiSession = Depends(ready_admin_csrf),
+        bot_id: str | None = Query(default=None),
     ) -> dict[str, Any]:
         if action not in {"login", "logout"}:
             raise HTTPException(status_code=404, detail="未知飞书动作")
+        bot = get_settings().feishu_bot(bot_id)
+        if bot is None:
+            raise HTTPException(status_code=404, detail="未知飞书 Bot")
         try:
-            result = await getattr(get_container().feishu, action)()
-            return {"ok": True, "result": result}
+            result = await getattr(get_container().feishu_clients[bot.id], action)()
+            return {"ok": True, "bot_id": bot.id, "result": result}
         except Exception as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime, timedelta
 
-from .config import Settings
+from .config import FeishuBotConfig, QQBotConfig, Settings
 from .database import Database
 from .models import (
     GroupMessage,
@@ -23,19 +23,33 @@ class JoinApprovalService:
         database: Database,
         engine: DecisionEngine,
         qq: QQGateway,
+        bot: QQBotConfig | None = None,
     ) -> None:
         self.settings = settings
         self.database = database
         self.engine = engine
         self.qq = qq
+        self.bot = bot or settings.qq_bot()
+        if self.bot is None:
+            raise ValueError("No QQ Bot is configured")
 
     async def handle(self, request: JoinRequest) -> str:
-        if not self.settings.join_approval.enabled:
+        task = self.bot.tasks.join_management
+        if not task.enabled or not task.detect_requests:
             return "disabled"
-        if request.group_id not in self.settings.qq.managed_group_ids:
+        if request.group_id not in self.bot.managed_group_ids:
             return "unmanaged_group"
         if not self.database.save_join_request(request):
             return "duplicate"
+        if not task.execute_management:
+            self.database.audit(
+                "join_detected",
+                "recorded",
+                "join_request",
+                request.flag,
+                {"bot_id": self.bot.id, "request": request.model_dump(mode="json")},
+            )
+            return "detected"
 
         try:
             decision = await self.engine.review_join(request)
@@ -48,20 +62,20 @@ class JoinApprovalService:
                 matched_rules=["engine_error"],
             )
 
-        threshold_met = decision.confidence >= self.settings.join_approval.minimum_confidence
+        threshold_met = decision.confidence >= task.minimum_confidence
         action_status = "manual_review"
         try:
             if (
                 decision.decision == "approve"
                 and threshold_met
-                and self.settings.join_approval.auto_approve
+                and task.auto_approve
             ):
                 await self.qq.approve_join(request, approve=True)
                 action_status = "dry_run_approve" if self.settings.app.dry_run else "approved"
             elif (
                 decision.decision == "reject"
                 and threshold_met
-                and self.settings.join_approval.auto_reject
+                and task.auto_reject
             ):
                 await self.qq.approve_join(request, approve=False, reason=decision.reason[:120])
                 action_status = "dry_run_reject" if self.settings.app.dry_run else "rejected"
@@ -100,9 +114,9 @@ class JoinApprovalService:
     ) -> None:
         if not threshold_met:
             execution_note = "置信度不足"
-        elif decision.decision == "approve" and not self.settings.join_approval.auto_approve:
+        elif decision.decision == "approve" and not self.bot.tasks.join_management.auto_approve:
             execution_note = "自动同意未启用"
-        elif decision.decision == "reject" and not self.settings.join_approval.auto_reject:
+        elif decision.decision == "reject" and not self.bot.tasks.join_management.auto_reject:
             execution_note = "自动拒绝未启用"
         else:
             execution_note = "模型要求人工复核"
@@ -124,26 +138,51 @@ class ModerationService:
         database: Database,
         engine: DecisionEngine,
         qq: QQGateway,
+        bot: QQBotConfig | None = None,
     ) -> None:
         self.settings = settings
         self.database = database
         self.engine = engine
         self.qq = qq
+        self.bot = bot or settings.qq_bot()
+        if self.bot is None:
+            raise ValueError("No QQ Bot is configured")
 
     def capture(self, message: GroupMessage) -> bool:
-        if message.group_id not in self.settings.qq.managed_group_ids:
+        task = self.bot.tasks.message_detection
+        if not task.enabled or not (task.realtime_detection or task.polling_detection):
+            return False
+        if message.group_id not in self.bot.managed_group_ids:
             return False
         return self.database.save_message(message)
 
     async def run_group(self, group_id: str, window_end: datetime | None = None) -> str:
-        if not self.settings.moderation.enabled:
+        task = self.bot.tasks.message_detection
+        if not task.enabled or not task.polling_detection:
             return "disabled"
         end = (window_end or datetime.now(UTC)).astimezone(UTC)
-        start = end - timedelta(minutes=self.settings.moderation.window_minutes)
-        if self.database.moderation_run_exists(group_id, start, end):
+        start = end - timedelta(minutes=task.window_minutes)
+        if not task.analyze:
+            messages = self.database.messages_between(
+                group_id, start, end, task.max_messages_per_run, self.bot.id
+            )
+            self.database.audit(
+                "message_poll",
+                "completed",
+                "group",
+                group_id,
+                {
+                    "bot_id": self.bot.id,
+                    "window_start": start,
+                    "window_end": end,
+                    "message_count": len(messages),
+                },
+            )
+            return f"detected:{len(messages)}"
+        if self.database.moderation_run_exists(group_id, start, end, self.bot.id):
             return "duplicate"
         messages = self.database.messages_between(
-            group_id, start, end, self.settings.moderation.max_messages_per_run
+            group_id, start, end, task.max_messages_per_run, self.bot.id
         )
         if not messages:
             result = ModerationResult(safe=True, summary="监测窗口内没有群聊文本消息")
@@ -161,10 +200,10 @@ class ModerationService:
                 )
                 return "failed"
 
-        alert = bool(result.findings and result.max_risk >= self.settings.moderation.risk_threshold)
+        alert = bool(result.findings and result.max_risk >= task.risk_threshold)
         alert_delivered = False
         alert_failed = False
-        if alert:
+        if alert and task.handle:
             try:
                 await self.qq.notify_administrators(
                     self._format_alert(group_id, start, end, len(messages), result)
@@ -188,6 +227,7 @@ class ModerationService:
             result.max_risk,
             result.model_dump(mode="json"),
             alert_delivered,
+            self.bot.id,
         )
         audit_status = (
             "alerted" if alert_delivered else "alert_failed" if alert_failed else "completed"
@@ -208,6 +248,8 @@ class ModerationService:
             return "alerted"
         if alert_failed:
             return "alert_failed"
+        if alert and not task.handle:
+            return "analyzed"
         return "safe"
 
     @staticmethod
@@ -243,19 +285,28 @@ class AnnouncementService:
         database: Database,
         qq: QQGateway,
         feishu: FeishuGateway,
+        bot: QQBotConfig | None = None,
+        feishu_config: FeishuBotConfig | None = None,
     ) -> None:
         self.settings = settings
         self.database = database
         self.qq = qq
         self.feishu = feishu
+        self.bot = bot or settings.qq_bot()
+        self.feishu_config = feishu_config or settings.feishu_bot()
+        if self.bot is None:
+            raise ValueError("No QQ Bot is configured")
 
     async def sync_group(self, group_id: str) -> dict[str, object]:
-        if not self.settings.announcements.enabled:
+        if not self.bot.tasks.announcement_sync.enabled:
             return {"fetched": 0, "new": 0, "synced": 0, "failed": 0}
         announcements = []
         fetch_error = ""
         try:
             announcements = await self.qq.fetch_announcements(group_id)
+            announcements = [
+                item.model_copy(update={"bot_id": self.bot.id}) for item in announcements
+            ]
         except Exception as exc:
             logger.exception("Announcement fetch failed for group %s", group_id)
             fetch_error = str(exc)
@@ -270,11 +321,13 @@ class AnnouncementService:
         return stats
 
     async def retry_pending(self, group_id: str | None = None) -> dict[str, int]:
-        if not self.settings.feishu.enabled:
+        if self.feishu_config is None or not self.feishu_config.enabled:
             return {"synced": 0, "failed": 0}
         synced = 0
         failed = 0
-        for row_id, announcement in self.database.pending_announcements(group_id=group_id):
+        for row_id, announcement in self.database.pending_announcements(
+            group_id=group_id, bot_id=self.bot.id
+        ):
             try:
                 await self.feishu.archive_announcement(announcement)
                 self.database.mark_announcement_sync(row_id, True)
@@ -287,20 +340,32 @@ class AnnouncementService:
 
 
 class SearchService:
-    def __init__(self, settings: Settings, feishu: FeishuGateway, qq: QQGateway) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        feishu: FeishuGateway,
+        qq: QQGateway,
+        bot: QQBotConfig | None = None,
+        feishu_config: FeishuBotConfig | None = None,
+    ) -> None:
         self.settings = settings
         self.feishu = feishu
         self.qq = qq
+        self.bot = bot or settings.qq_bot()
+        self.feishu_config = feishu_config or settings.feishu_bot()
+        if self.bot is None:
+            raise ValueError("No QQ Bot is configured")
 
     def extract_query(self, text: str) -> str | None:
         normalized = text.strip()
-        for prefix in self.settings.feishu.search_prefixes:
+        prefixes = self.feishu_config.search_prefixes if self.feishu_config else []
+        for prefix in prefixes:
             if normalized.startswith(prefix):
                 return normalized[len(prefix) :].strip()
         return None
 
     async def handle_admin_message(self, user_id: str, text: str) -> str:
-        if user_id not in self.settings.qq.administrator_qq_ids:
+        if user_id not in self.bot.administrator_qq_ids:
             return "unauthorized"
         query = self.extract_query(text)
         if query is None:
@@ -308,11 +373,11 @@ class SearchService:
         if not query:
             await self.qq.send_private_message(user_id, "用法：搜索 <关键词>")
             return "empty_query"
-        if not self.settings.feishu.enabled:
+        if self.feishu_config is None or not self.feishu_config.enabled:
             await self.qq.send_private_message(user_id, "飞书检索尚未启用。")
             return "feishu_disabled"
         try:
-            hits = await self.feishu.search(query, self.settings.feishu.max_search_results)
+            hits = await self.feishu.search(query, self.feishu_config.max_search_results)
         except Exception as exc:
             logger.exception("Feishu search failed")
             await self.qq.send_private_message(user_id, f"飞书检索失败：{type(exc).__name__}")

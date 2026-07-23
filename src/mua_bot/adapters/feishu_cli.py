@@ -6,7 +6,7 @@ import os
 from collections import defaultdict
 from typing import Any
 
-from ..config import FeishuConfig
+from ..config import FeishuBotConfig, FeishuConfig
 from ..models import Announcement, SearchHit
 
 
@@ -44,7 +44,7 @@ class FeishuCliGateway:
     second command.
     """
 
-    def __init__(self, config: FeishuConfig):
+    def __init__(self, config: FeishuConfig | FeishuBotConfig):
         self.config = config
 
     async def _run(self, action: str, values: dict[str, Any], stdin_text: str | None = None) -> Any:
@@ -131,11 +131,14 @@ class FeishuCliGateway:
         if "doctor" in self.config.command_templates:
             result = await self._run("doctor", {})
             return {"ok": True, "result": result}
+        environment = os.environ.copy()
+        environment.update(self.config.extra_environment)
         process = await asyncio.create_subprocess_exec(
             self.config.executable,
             "--version",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=environment,
         )
         try:
             stdout, stderr = await asyncio.wait_for(

@@ -33,7 +33,7 @@ mua-bot = "mua_bot.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-mua_bot = ["web/*.html", "web/*.css", "web/*.js"]
+mua_bot = ["web/*.html", "web/*.css", "web/*.js", "web/img/*.png"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

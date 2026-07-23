@@ -28,19 +28,33 @@ def _event_time(event: dict[str, Any]) -> datetime:
 class EventHandler:
     def __init__(
         self,
-        join_service: JoinApprovalService,
-        moderation_service: ModerationService,
-        search_service: SearchService,
+        join_service: JoinApprovalService | dict[str, JoinApprovalService],
+        moderation_service: ModerationService | dict[str, ModerationService],
+        search_service: SearchService | dict[str, SearchService],
     ) -> None:
-        self.join_service = join_service
-        self.moderation_service = moderation_service
-        self.search_service = search_service
+        self.join_services = (
+            join_service if isinstance(join_service, dict) else {"default": join_service}
+        )
+        self.moderation_services = (
+            moderation_service
+            if isinstance(moderation_service, dict)
+            else {"default": moderation_service}
+        )
+        self.search_services = (
+            search_service if isinstance(search_service, dict) else {"default": search_service}
+        )
 
-    async def handle(self, event: dict[str, Any]) -> str:
+    async def handle(self, event: dict[str, Any], bot_id: str = "default") -> str:
+        join_service = self.join_services.get(bot_id)
+        moderation_service = self.moderation_services.get(bot_id)
+        search_service = self.search_services.get(bot_id)
+        if join_service is None or moderation_service is None or search_service is None:
+            return "unknown_bot"
         post_type = event.get("post_type")
         if post_type == "request" and event.get("request_type") == "group":
             event_id = _event_id(event)
             request = JoinRequest(
+                bot_id=bot_id,
                 event_id=event_id,
                 flag=str(event.get("flag") or event_id),
                 group_id=str(event.get("group_id", "")),
@@ -49,13 +63,14 @@ class EventHandler:
                 sub_type=str(event.get("sub_type") or "add"),
                 received_at=_event_time(event),
             )
-            return await self.join_service.handle(request)
+            return await join_service.handle(request)
 
         if post_type == "message":
             text = onebot_plain_text(event.get("message", event.get("raw_message", "")))
             message_type = event.get("message_type")
             if message_type == "group":
                 message = GroupMessage(
+                    bot_id=bot_id,
                     message_id=str(event.get("message_id") or _event_id(event)),
                     group_id=str(event.get("group_id", "")),
                     user_id=str(event.get("user_id", "")),
@@ -63,9 +78,9 @@ class EventHandler:
                     sent_at=_event_time(event),
                     raw_event=event,
                 )
-                return "captured" if self.moderation_service.capture(message) else "ignored"
+                return "captured" if moderation_service.capture(message) else "ignored"
             if message_type == "private":
-                return await self.search_service.handle_admin_message(
+                return await search_service.handle_admin_message(
                     str(event.get("user_id", "")), text
                 )
         return "ignored"

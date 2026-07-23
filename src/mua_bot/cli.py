@@ -39,19 +39,23 @@ async def _run_once(settings: Settings, command: str) -> dict[str, Any]:
                 "database": {"ok": True, "counts": container.database.counts()},
                 "config": {
                     "ok": not settings.diagnostics()["errors"],
-                    "managed_groups": settings.qq.managed_group_ids,
+                    "managed_groups": settings.managed_group_ids(),
                     "dry_run": settings.app.dry_run,
                     "diagnostics": settings.diagnostics(),
                 },
             }
-            try:
-                result["qq"] = await container.qq.doctor()
-            except Exception as exc:
-                result["qq"] = {"ok": False, "error": str(exc)}
-            try:
-                result["feishu"] = await container.feishu.doctor()
-            except Exception as exc:
-                result["feishu"] = {"ok": False, "error": str(exc)}
+            result["qq"] = {}
+            for bot_id, client in container.qq_clients.items():
+                try:
+                    result["qq"][bot_id] = await client.doctor()
+                except Exception as exc:
+                    result["qq"][bot_id] = {"ok": False, "error": str(exc)}
+            result["feishu"] = {}
+            for bot_id, client in container.feishu_clients.items():
+                try:
+                    result["feishu"][bot_id] = await client.doctor()
+                except Exception as exc:
+                    result["feishu"][bot_id] = {"ok": False, "error": str(exc)}
             return result
         if command == "run-moderation":
             return await container.runtime.run_all_moderation()
@@ -61,7 +65,8 @@ async def _run_once(settings: Settings, command: str) -> dict[str, Any]:
             return await container.runtime.run_maintenance()
         raise ValueError(f"Unsupported one-shot command: {command}")
     finally:
-        await container.qq.close()
+        for client in container.qq_clients.values():
+            await client.close()
         close = getattr(container.engine, "close", None)
         if close is not None:
             await close()

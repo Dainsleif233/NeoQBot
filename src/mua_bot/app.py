@@ -104,15 +104,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "diagnostics": diagnostics,
         }
 
-    @app.post("/webhooks/onebot", status_code=status.HTTP_202_ACCEPTED)
-    async def onebot_webhook(
+    async def accept_onebot_webhook(
+        bot_id: str,
         request: Request,
-        x_signature: Annotated[str | None, Header()] = None,
+        x_signature: str | None,
     ) -> dict[str, object]:
+        bot = resolved_settings.qq_bot(bot_id)
+        if bot is None:
+            raise HTTPException(status_code=404, detail="Unknown QQ Bot")
+        if not bot.enabled:
+            raise HTTPException(status_code=503, detail="QQ Bot is disabled")
         body = await request.body()
         if len(body) > 2 * 1024 * 1024:
             raise HTTPException(status_code=413, detail="Event body too large")
-        if not _verify_onebot_signature(body, x_signature, resolved_settings.qq.webhook_secret):
+        if not _verify_onebot_signature(body, x_signature, bot.webhook_secret):
             raise HTTPException(status_code=401, detail="Invalid OneBot signature")
         try:
             event = json.loads(body)
@@ -121,10 +126,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not isinstance(event, dict):
             raise HTTPException(status_code=400, detail="Event must be a JSON object")
         try:
-            await container.runtime.submit(event)
+            await container.runtime.submit(event, bot.id)
         except asyncio.QueueFull as exc:
             raise HTTPException(status_code=503, detail="Event queue is full") from exc
-        return {"accepted": True}
+        return {"accepted": True, "bot_id": bot.id}
+
+    @app.post("/webhooks/onebot", status_code=status.HTTP_202_ACCEPTED)
+    async def onebot_webhook(
+        request: Request,
+        x_signature: Annotated[str | None, Header()] = None,
+    ) -> dict[str, object]:
+        bot = resolved_settings.qq_bot()
+        if bot is None:
+            raise HTTPException(status_code=503, detail="No QQ Bot is configured")
+        return await accept_onebot_webhook(bot.id, request, x_signature)
+
+    @app.post("/webhooks/onebot/{bot_id}", status_code=status.HTTP_202_ACCEPTED)
+    async def onebot_bot_webhook(
+        bot_id: str,
+        request: Request,
+        x_signature: Annotated[str | None, Header()] = None,
+    ) -> dict[str, object]:
+        return await accept_onebot_webhook(bot_id, request, x_signature)
 
     @app.get("/api/v1/status", dependencies=[Depends(require_admin)])
     async def api_status() -> dict[str, object]:

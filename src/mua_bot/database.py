@@ -18,8 +18,9 @@ PRAGMA foreign_keys=ON;
 
 CREATE TABLE IF NOT EXISTS join_requests (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bot_id TEXT NOT NULL DEFAULT 'default',
     event_id TEXT NOT NULL,
-    request_flag TEXT NOT NULL UNIQUE,
+    request_flag TEXT NOT NULL,
     group_id TEXT NOT NULL,
     user_id TEXT NOT NULL,
     comment TEXT NOT NULL,
@@ -29,23 +30,26 @@ CREATE TABLE IF NOT EXISTS join_requests (
     confidence REAL,
     reason TEXT,
     action_status TEXT NOT NULL DEFAULT 'received',
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    UNIQUE(bot_id, request_flag)
 );
 
 CREATE TABLE IF NOT EXISTS group_messages (
+    bot_id TEXT NOT NULL DEFAULT 'default',
     message_id TEXT NOT NULL,
     group_id TEXT NOT NULL,
     user_id TEXT NOT NULL,
     text TEXT NOT NULL,
     sent_at TEXT NOT NULL,
     raw_event_json TEXT NOT NULL,
-    PRIMARY KEY (group_id, message_id)
+    PRIMARY KEY (bot_id, group_id, message_id)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_group_time
 ON group_messages(group_id, sent_at);
 
 CREATE TABLE IF NOT EXISTS moderation_runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bot_id TEXT NOT NULL DEFAULT 'default',
     group_id TEXT NOT NULL,
     window_start TEXT NOT NULL,
     window_end TEXT NOT NULL,
@@ -54,11 +58,12 @@ CREATE TABLE IF NOT EXISTS moderation_runs (
     result_json TEXT NOT NULL,
     alerted INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
-    UNIQUE(group_id, window_start, window_end)
+    UNIQUE(bot_id, group_id, window_start, window_end)
 );
 
 CREATE TABLE IF NOT EXISTS announcements (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bot_id TEXT NOT NULL DEFAULT 'default',
     announcement_id TEXT NOT NULL,
     group_id TEXT NOT NULL,
     content_hash TEXT NOT NULL,
@@ -72,7 +77,7 @@ CREATE TABLE IF NOT EXISTS announcements (
     sync_status TEXT NOT NULL DEFAULT 'pending',
     sync_attempts INTEGER NOT NULL DEFAULT 0,
     sync_error TEXT,
-    UNIQUE(group_id, announcement_id, content_hash)
+    UNIQUE(bot_id, group_id, announcement_id, content_hash)
 );
 CREATE INDEX IF NOT EXISTS idx_announcements_sync_status
 ON announcements(sync_status, id);
@@ -135,6 +140,158 @@ class Database:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._lock, self._connect() as connection:
             connection.executescript(SCHEMA)
+            self._ensure_bot_columns(connection)
+            self._migrate_legacy_bot_constraints(connection)
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_messages_group_time "
+                "ON group_messages(group_id, sent_at)"
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS idx_announcements_sync_status "
+                "ON announcements(sync_status, id)"
+            )
+
+    @staticmethod
+    def _ensure_bot_columns(connection: sqlite3.Connection) -> None:
+        for table in ("join_requests", "group_messages", "moderation_runs", "announcements"):
+            columns = {
+                row["name"]
+                for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            if "bot_id" not in columns:
+                connection.execute(
+                    f"ALTER TABLE {table} ADD COLUMN bot_id TEXT NOT NULL DEFAULT 'default'"
+                )
+
+    @staticmethod
+    def _migrate_legacy_bot_constraints(connection: sqlite3.Connection) -> None:
+        def normalized_schema(table: str) -> str:
+            row = connection.execute(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+            ).fetchone()
+            return "".join(str(row["sql"] if row else "").lower().split())
+
+        if "unique(bot_id,request_flag)" not in normalized_schema("join_requests"):
+            connection.executescript(
+                """
+                ALTER TABLE join_requests RENAME TO join_requests_legacy;
+                CREATE TABLE join_requests (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    bot_id TEXT NOT NULL DEFAULT 'default',
+                    event_id TEXT NOT NULL,
+                    request_flag TEXT NOT NULL,
+                    group_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    comment TEXT NOT NULL,
+                    sub_type TEXT NOT NULL,
+                    received_at TEXT NOT NULL,
+                    decision TEXT,
+                    confidence REAL,
+                    reason TEXT,
+                    action_status TEXT NOT NULL DEFAULT 'received',
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(bot_id, request_flag)
+                );
+                INSERT INTO join_requests (
+                    id, bot_id, event_id, request_flag, group_id, user_id, comment, sub_type,
+                    received_at, decision, confidence, reason, action_status, updated_at
+                )
+                SELECT id, bot_id, event_id, request_flag, group_id, user_id, comment, sub_type,
+                       received_at, decision, confidence, reason, action_status, updated_at
+                FROM join_requests_legacy;
+                DROP TABLE join_requests_legacy;
+                """
+            )
+
+        if "primarykey(bot_id,group_id,message_id)" not in normalized_schema("group_messages"):
+            connection.executescript(
+                """
+                ALTER TABLE group_messages RENAME TO group_messages_legacy;
+                CREATE TABLE group_messages (
+                    bot_id TEXT NOT NULL DEFAULT 'default',
+                    message_id TEXT NOT NULL,
+                    group_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    sent_at TEXT NOT NULL,
+                    raw_event_json TEXT NOT NULL,
+                    PRIMARY KEY (bot_id, group_id, message_id)
+                );
+                INSERT INTO group_messages (
+                    bot_id, message_id, group_id, user_id, text, sent_at, raw_event_json
+                )
+                SELECT bot_id, message_id, group_id, user_id, text, sent_at, raw_event_json
+                FROM group_messages_legacy;
+                DROP TABLE group_messages_legacy;
+                """
+            )
+
+        if "unique(bot_id,group_id,window_start,window_end)" not in normalized_schema(
+            "moderation_runs"
+        ):
+            connection.executescript(
+                """
+                ALTER TABLE moderation_runs RENAME TO moderation_runs_legacy;
+                CREATE TABLE moderation_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    bot_id TEXT NOT NULL DEFAULT 'default',
+                    group_id TEXT NOT NULL,
+                    window_start TEXT NOT NULL,
+                    window_end TEXT NOT NULL,
+                    message_count INTEGER NOT NULL,
+                    max_risk REAL NOT NULL,
+                    result_json TEXT NOT NULL,
+                    alerted INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    UNIQUE(bot_id, group_id, window_start, window_end)
+                );
+                INSERT INTO moderation_runs (
+                    id, bot_id, group_id, window_start, window_end, message_count, max_risk,
+                    result_json, alerted, created_at
+                )
+                SELECT id, bot_id, group_id, window_start, window_end, message_count, max_risk,
+                       result_json, alerted, created_at
+                FROM moderation_runs_legacy;
+                DROP TABLE moderation_runs_legacy;
+                """
+            )
+
+        if "unique(bot_id,group_id,announcement_id,content_hash)" not in normalized_schema(
+            "announcements"
+        ):
+            connection.executescript(
+                """
+                ALTER TABLE announcements RENAME TO announcements_legacy;
+                CREATE TABLE announcements (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    bot_id TEXT NOT NULL DEFAULT 'default',
+                    announcement_id TEXT NOT NULL,
+                    group_id TEXT NOT NULL,
+                    content_hash TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    author_id TEXT NOT NULL,
+                    published_at TEXT,
+                    source_payload_json TEXT NOT NULL,
+                    first_seen_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL,
+                    sync_status TEXT NOT NULL DEFAULT 'pending',
+                    sync_attempts INTEGER NOT NULL DEFAULT 0,
+                    sync_error TEXT,
+                    UNIQUE(bot_id, group_id, announcement_id, content_hash)
+                );
+                INSERT INTO announcements (
+                    id, bot_id, announcement_id, group_id, content_hash, title, content,
+                    author_id, published_at, source_payload_json, first_seen_at, last_seen_at,
+                    sync_status, sync_attempts, sync_error
+                )
+                SELECT id, bot_id, announcement_id, group_id, content_hash, title, content,
+                       author_id, published_at, source_payload_json, first_seen_at, last_seen_at,
+                       sync_status, sync_attempts, sync_error
+                FROM announcements_legacy;
+                DROP TABLE announcements_legacy;
+                """
+            )
 
     def save_join_request(self, request: JoinRequest) -> bool:
         now = utc_now().isoformat()
@@ -142,11 +299,12 @@ class Database:
             cursor = connection.execute(
                 """
                 INSERT OR IGNORE INTO join_requests (
-                    event_id, request_flag, group_id, user_id, comment, sub_type,
+                    bot_id, event_id, request_flag, group_id, user_id, comment, sub_type,
                     received_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    request.bot_id,
                     request.event_id,
                     request.flag,
                     request.group_id,
@@ -167,7 +325,7 @@ class Database:
                 """
                 UPDATE join_requests
                 SET decision = ?, confidence = ?, reason = ?, action_status = ?, updated_at = ?
-                WHERE request_flag = ?
+                WHERE bot_id = ? AND request_flag = ?
                 """,
                 (
                     decision.decision,
@@ -175,8 +333,19 @@ class Database:
                     decision.reason,
                     action_status,
                     utc_now().isoformat(),
+                    request.bot_id,
                     request.flag,
                 ),
+            )
+
+    def mark_join_detected(self, request: JoinRequest) -> None:
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE join_requests SET action_status = 'detected', updated_at = ?
+                WHERE bot_id = ? AND request_flag = ?
+                """,
+                (utc_now().isoformat(), request.bot_id, request.flag),
             )
 
     def save_message(self, message: GroupMessage) -> bool:
@@ -184,10 +353,11 @@ class Database:
             cursor = connection.execute(
                 """
                 INSERT OR IGNORE INTO group_messages (
-                    message_id, group_id, user_id, text, sent_at, raw_event_json
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                    bot_id, message_id, group_id, user_id, text, sent_at, raw_event_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    message.bot_id,
                     message.message_id,
                     message.group_id,
                     message.user_id,
@@ -199,20 +369,26 @@ class Database:
             return cursor.rowcount == 1
 
     def messages_between(
-        self, group_id: str, start: datetime, end: datetime, limit: int
+        self,
+        group_id: str,
+        start: datetime,
+        end: datetime,
+        limit: int,
+        bot_id: str = "default",
     ) -> list[GroupMessage]:
         with self._lock, self._connect() as connection:
             rows = connection.execute(
                 """
                 SELECT * FROM group_messages
-                WHERE group_id = ? AND sent_at >= ? AND sent_at < ?
+                WHERE bot_id = ? AND group_id = ? AND sent_at >= ? AND sent_at < ?
                 ORDER BY sent_at DESC LIMIT ?
                 """,
-                (group_id, start.isoformat(), end.isoformat(), limit),
+                (bot_id, group_id, start.isoformat(), end.isoformat(), limit),
             ).fetchall()
         rows = list(reversed(rows))
         return [
             GroupMessage(
+                bot_id=row["bot_id"],
                 message_id=row["message_id"],
                 group_id=row["group_id"],
                 user_id=row["user_id"],
@@ -223,14 +399,16 @@ class Database:
             for row in rows
         ]
 
-    def moderation_run_exists(self, group_id: str, start: datetime, end: datetime) -> bool:
+    def moderation_run_exists(
+        self, group_id: str, start: datetime, end: datetime, bot_id: str = "default"
+    ) -> bool:
         with self._lock, self._connect() as connection:
             row = connection.execute(
                 """
                 SELECT 1 FROM moderation_runs
-                WHERE group_id = ? AND window_start = ? AND window_end = ?
+                WHERE bot_id = ? AND group_id = ? AND window_start = ? AND window_end = ?
                 """,
-                (group_id, start.isoformat(), end.isoformat()),
+                (bot_id, group_id, start.isoformat(), end.isoformat()),
             ).fetchone()
         return row is not None
 
@@ -243,16 +421,18 @@ class Database:
         max_risk: float,
         result: dict[str, Any],
         alerted: bool,
+        bot_id: str = "default",
     ) -> None:
         with self._lock, self._connect() as connection:
             connection.execute(
                 """
                 INSERT OR IGNORE INTO moderation_runs (
-                    group_id, window_start, window_end, message_count, max_risk,
+                    bot_id, group_id, window_start, window_end, message_count, max_risk,
                     result_json, alerted, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    bot_id,
                     group_id,
                     start.isoformat(),
                     end.isoformat(),
@@ -278,11 +458,12 @@ class Database:
             cursor = connection.execute(
                 """
                 INSERT OR IGNORE INTO announcements (
-                    announcement_id, group_id, content_hash, title, content,
+                    bot_id, announcement_id, group_id, content_hash, title, content,
                     author_id, published_at, source_payload_json, first_seen_at, last_seen_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    announcement.bot_id,
                     announcement.announcement_id,
                     announcement.group_id,
                     content_hash,
@@ -299,22 +480,31 @@ class Database:
                 connection.execute(
                     """
                     UPDATE announcements SET last_seen_at = ?
-                    WHERE group_id = ? AND announcement_id = ? AND content_hash = ?
+                    WHERE bot_id = ? AND group_id = ? AND announcement_id = ? AND content_hash = ?
                     """,
-                    (now, announcement.group_id, announcement.announcement_id, content_hash),
+                    (
+                        now,
+                        announcement.bot_id,
+                        announcement.group_id,
+                        announcement.announcement_id,
+                        content_hash,
+                    ),
                 )
             return cursor.rowcount == 1
 
     def pending_announcements(
-        self, limit: int = 100, group_id: str | None = None
+        self, limit: int = 100, group_id: str | None = None, bot_id: str | None = None
     ) -> list[tuple[int, Announcement]]:
         where = "sync_status IN ('pending', 'failed')"
-        params: tuple[object, ...]
-        if group_id is None:
-            params = (limit,)
-        else:
+        values: list[object] = []
+        if group_id is not None:
             where += " AND group_id = ?"
-            params = (group_id, limit)
+            values.append(group_id)
+        if bot_id is not None:
+            where += " AND bot_id = ?"
+            values.append(bot_id)
+        values.append(limit)
+        params = tuple(values)
         with self._lock, self._connect() as connection:
             rows = connection.execute(
                 f"""
@@ -330,6 +520,7 @@ class Database:
                 (
                     row["id"],
                     Announcement(
+                        bot_id=row["bot_id"],
                         announcement_id=row["announcement_id"],
                         group_id=row["group_id"],
                         title=row["title"],
@@ -497,6 +688,7 @@ class Database:
     def recent_records(self, kind: str, limit: int = 50) -> list[dict[str, Any]]:
         definitions = {
             "joins": ("join_requests", "received_at", ()),
+            "messages": ("group_messages", "sent_at", ("raw_event_json",)),
             "moderation": ("moderation_runs", "created_at", ("result_json",)),
             "announcements": ("announcements", "last_seen_at", ("source_payload_json",)),
             "audit": ("audit_log", "created_at", ("details_json",)),

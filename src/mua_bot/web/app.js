@@ -1,20 +1,41 @@
 (function () {
   "use strict";
 
-  var state = { csrf: "", username: "", config: null, qqUrl: "", activeView: "dashboard" };
-  var $ = function (id) { return document.getElementById(id); };
+  var state = {
+    csrf: "",
+    username: "",
+    activeView: "dashboard",
+    config: null,
+    qqUrls: {}
+  };
+
+  function $(id) { return document.getElementById(id); }
+  function clone(value) { return JSON.parse(JSON.stringify(value)); }
+  function listValue(value) { return (value || []).join("\n"); }
+  function splitList(value) {
+    return String(value || "").split(/[\n,]/).map(function (item) { return item.trim(); }).filter(Boolean);
+  }
+  function numberValue(value, fallback) {
+    var parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+  }
+  function pretty(value) { return JSON.stringify(value || {}, null, 2); }
+  function parseJsonText(value, label) {
+    try { return JSON.parse(value || "{}"); }
+    catch (_) { throw new Error(label + "不是有效 JSON"); }
+  }
+  function errorText(detail) {
+    if (typeof detail === "string") return detail;
+    if (Array.isArray(detail)) return detail.map(function (item) { return item.msg || JSON.stringify(item); }).join("；");
+    return JSON.stringify(detail || "请求失败");
+  }
 
   function showToast(message, isError) {
     var toast = $("toast");
     toast.textContent = message;
     toast.className = "toast show" + (isError ? " error" : "");
     window.clearTimeout(showToast.timer);
-    showToast.timer = window.setTimeout(function () { toast.className = "toast"; }, 3600);
-  }
-
-  function errorText(detail) {
-    if (typeof detail === "string") return detail;
-    try { return JSON.stringify(detail); } catch (_) { return "请求失败"; }
+    showToast.timer = window.setTimeout(function () { toast.className = "toast"; }, 3200);
   }
 
   async function api(path, options) {
@@ -37,6 +58,18 @@
       throw error;
     }
     return data;
+  }
+
+  function applyTheme(theme) {
+    document.documentElement.dataset.theme = theme;
+    $("theme-button").textContent = theme === "dark" ? "切换纯白" : "切换纯黑";
+    try { window.localStorage.setItem("mua-theme", theme); } catch (_) {}
+  }
+
+  function initializeTheme() {
+    var theme = "dark";
+    try { theme = window.localStorage.getItem("mua-theme") || "dark"; } catch (_) {}
+    applyTheme(theme === "light" ? "light" : "dark");
   }
 
   function hideAllRoots() {
@@ -64,6 +97,7 @@
   }
 
   async function initialize() {
+    initializeTheme();
     try {
       var session = await api("/api/gui/auth/session");
       state.csrf = session.csrf_token;
@@ -129,9 +163,13 @@
     showLogin();
   });
 
+  $("theme-button").addEventListener("click", function () {
+    applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+  });
+
   var titles = {
     dashboard: ["Overview", "运行概览"],
-    integrations: ["Connections", "平台登录"],
+    integrations: ["Orchestration", "Bot 编排"],
     settings: ["Configuration", "系统设置"],
     records: ["Audit trail", "记录与审计"]
   };
@@ -164,8 +202,8 @@
     var target = $("diagnostics-list");
     target.replaceChildren();
     var items = [];
-    (diagnostics.errors || []).forEach(function (text) { items.push(["error", text]); });
-    (diagnostics.warnings || []).forEach(function (text) { items.push(["warning", text]); });
+    (diagnostics.errors || []).forEach(function (value) { items.push(["error", value]); });
+    (diagnostics.warnings || []).forEach(function (value) { items.push(["warning", value]); });
     if (!items.length) items.push(["ok", "配置检查通过，没有发现问题。"]);
     items.forEach(function (item) {
       var node = document.createElement("div");
@@ -185,6 +223,45 @@
     }
   }
 
+  function taskTag(label, enabled) {
+    var node = document.createElement("span");
+    node.className = "task-tag" + (enabled ? " on" : "");
+    node.textContent = label + (enabled ? " 开" : " 关");
+    return node;
+  }
+
+  function renderBotSummary(bots) {
+    var target = $("bot-summary");
+    target.replaceChildren();
+    if (!bots.length) {
+      var empty = document.createElement("div");
+      empty.className = "empty-state";
+      empty.textContent = "还没有配置 QQ Bot。";
+      target.appendChild(empty);
+      return;
+    }
+    bots.forEach(function (bot) {
+      var row = document.createElement("div");
+      row.className = "summary-row";
+      var title = document.createElement("div");
+      var strong = document.createElement("strong");
+      strong.textContent = bot.name;
+      var small = document.createElement("div");
+      small.className = "muted";
+      small.textContent = bot.enabled ? bot.groups.length + " 个群" : "账号已停用";
+      title.append(strong, small);
+      var tags = document.createElement("div");
+      tags.className = "task-tags";
+      tags.append(
+        taskTag("入群管理", bot.enabled && bot.tasks.join_management.enabled),
+        taskTag("消息检测", bot.enabled && bot.tasks.message_detection.enabled),
+        taskTag("公告同步", bot.enabled && bot.tasks.announcement_sync.enabled)
+      );
+      row.append(title, tags);
+      target.appendChild(row);
+    });
+  }
+
   async function loadDashboard() {
     var data = await api("/api/gui/dashboard");
     $("count-joins").textContent = data.counts.join_requests || 0;
@@ -193,26 +270,30 @@
     $("count-notices").textContent = data.counts.announcements || 0;
     $("managed-groups").textContent = (data.managed_groups || []).length + " 个群";
     $("dry-run-badge").textContent = data.dry_run ? "安全演练中" : "真实动作已启用";
-    $("dry-run-badge").className = "pill " + (data.dry_run ? "warning" : "success");
+    $("dry-run-badge").className = "pill" + (data.dry_run ? "" : " solid");
+    renderBotSummary(data.bots || []);
     renderDiagnostics(data.diagnostics);
   }
 
+  async function runJob(job, botId, button) {
+    if (button) button.disabled = true;
+    $("job-output").textContent = "任务执行中…";
+    try {
+      var suffix = botId ? "?bot_id=" + encodeURIComponent(botId) : "";
+      var result = await api("/api/gui/jobs/" + job + suffix, { method: "POST" });
+      $("job-output").textContent = JSON.stringify(result.result, null, 2);
+      showToast("任务执行完成");
+      await loadDashboard();
+    } catch (error) {
+      $("job-output").textContent = error.message;
+      showToast(error.message, true);
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
   document.querySelectorAll("[data-job]").forEach(function (button) {
-    button.addEventListener("click", async function () {
-      button.disabled = true;
-      $("job-output").textContent = "任务执行中…";
-      try {
-        var result = await api("/api/gui/jobs/" + button.dataset.job, { method: "POST" });
-        $("job-output").textContent = JSON.stringify(result.result, null, 2);
-        showToast("任务执行完成");
-        await loadDashboard();
-      } catch (error) {
-        $("job-output").textContent = error.message;
-        showToast(error.message, true);
-      } finally {
-        button.disabled = false;
-      }
-    });
+    button.addEventListener("click", function () { runJob(button.dataset.job, "", button); });
   });
 
   function statusText(status) {
@@ -220,57 +301,116 @@
     return "未连接 · " + (status && status.error ? status.error : JSON.stringify(status || {}));
   }
 
-  async function checkQQ() {
-    $("qq-status").textContent = "检测中…";
-    var data = await api("/api/gui/integrations/qq");
-    $("qq-status").textContent = statusText(data.status);
-    state.qqUrl = data.webui_public_url || (window.location.protocol + "//" + window.location.hostname + ":" + data.webui_public_port);
+  function integrationButton(label, action) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "button secondary";
+    button.textContent = label;
+    button.addEventListener("click", action);
+    return button;
   }
 
-  async function checkFeishu() {
-    $("feishu-status").textContent = "检测中…";
-    var data = await api("/api/gui/integrations/feishu");
-    $("feishu-status").textContent = statusText(data.status);
+  function qqPublicUrl(bot) {
+    return bot.webui_public_url || (window.location.protocol + "//" + window.location.hostname + ":" + bot.webui_public_port);
+  }
+
+  function renderQQIntegrations(bots) {
+    var target = $("qq-integrations");
+    target.replaceChildren();
+    bots.forEach(function (bot) {
+      var card = document.createElement("article");
+      card.className = "integration-card";
+      card.innerHTML = '<div class="integration-top"><div class="integration-logo">QQ</div><span class="pill"></span></div><h3></h3><div class="integration-meta"></div><div class="task-tags"></div><div class="integration-status"></div><div class="button-row"></div>';
+      card.querySelector(".pill").textContent = bot.enabled ? "已启用" : "已停用";
+      card.querySelector("h3").textContent = bot.name;
+      card.querySelector(".integration-meta").textContent = "Webhook " + bot.webhook_url;
+      var tasks = card.querySelector(".task-tags");
+      tasks.append(
+        taskTag("入群", bot.tasks.join_management.enabled),
+        taskTag("消息", bot.tasks.message_detection.enabled),
+        taskTag("公告", bot.tasks.announcement_sync.enabled)
+      );
+      card.querySelector(".integration-status").textContent = statusText(bot.status);
+      state.qqUrls[bot.id] = qqPublicUrl(bot);
+      var buttons = card.querySelector(".button-row");
+      buttons.append(
+        integrationButton("刷新状态", function () { loadIntegrationStatus().catch(function (error) { showToast(error.message, true); }); }),
+        integrationButton("打开登录", function () {
+          $("qq-frame").src = state.qqUrls[bot.id];
+          $("qq-frame-title").textContent = bot.name + " · NapCat WebUI";
+          $("qq-frame-panel").classList.remove("hidden");
+          $("qq-frame-panel").scrollIntoView({ behavior: "smooth" });
+        }),
+        integrationButton("新窗口", function () { window.open(state.qqUrls[bot.id], "_blank", "noopener"); })
+      );
+      if (bot.tasks.message_detection.enabled && bot.tasks.message_detection.analyze) {
+        buttons.append(integrationButton("立即分析", function () { runJob("moderation", bot.id, this); }));
+      }
+      if (bot.tasks.announcement_sync.enabled) {
+        buttons.append(integrationButton("一键同步公告", function () { runJob("announcements", bot.id, this); }));
+      }
+      target.appendChild(card);
+    });
+    if (!bots.length) {
+      var empty = document.createElement("div");
+      empty.className = "empty-editor";
+      empty.textContent = "暂无 QQ Bot，请先到系统设置中添加。";
+      target.appendChild(empty);
+    }
+  }
+
+  async function feishuAction(botId, action, button, output) {
+    button.disabled = true;
+    output.textContent = action === "login" ? "等待飞书 CLI 返回授权信息…" : "正在退出飞书…";
+    try {
+      var data = await api("/api/gui/integrations/feishu/" + action + "?bot_id=" + encodeURIComponent(botId), { method: "POST" });
+      output.textContent = typeof data.result === "string" ? data.result : JSON.stringify(data.result, null, 2);
+      showToast("飞书操作已完成");
+    } catch (error) {
+      output.textContent = error.message;
+      showToast(error.message, true);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  function renderFeishuIntegrations(bots) {
+    var target = $("feishu-integrations");
+    target.replaceChildren();
+    bots.forEach(function (bot) {
+      var card = document.createElement("article");
+      card.className = "integration-card";
+      card.innerHTML = '<div class="integration-top"><div class="integration-logo">FS</div><span class="pill"></span></div><h3></h3><div class="integration-meta">飞书 CLI 独立账号</div><div class="integration-status"></div><div class="button-row"></div>';
+      card.querySelector(".pill").textContent = bot.enabled ? "已启用" : "已停用";
+      card.querySelector("h3").textContent = bot.name;
+      var output = card.querySelector(".integration-status");
+      output.textContent = statusText(bot.status);
+      var buttons = card.querySelector(".button-row");
+      buttons.append(
+        integrationButton("刷新状态", function () { loadIntegrationStatus().catch(function (error) { showToast(error.message, true); }); }),
+        integrationButton("登录", function () { feishuAction(bot.id, "login", this, output); }),
+        integrationButton("退出", function () { feishuAction(bot.id, "logout", this, output); })
+      );
+      target.appendChild(card);
+    });
+    if (!bots.length) {
+      var empty = document.createElement("div");
+      empty.className = "empty-editor";
+      empty.textContent = "暂无飞书 Bot，请先到系统设置中添加。";
+      target.appendChild(empty);
+    }
   }
 
   async function loadIntegrationStatus() {
-    await Promise.allSettled([checkQQ(), checkFeishu()]);
+    var results = await Promise.all([api("/api/gui/integrations/qq"), api("/api/gui/integrations/feishu")]);
+    renderQQIntegrations(results[0].bots || []);
+    renderFeishuIntegrations(results[1].bots || []);
   }
 
-  $("qq-check").addEventListener("click", function () { checkQQ().catch(function (error) { showToast(error.message, true); }); });
-  $("qq-open").addEventListener("click", async function () {
-    try {
-      if (!state.qqUrl) await checkQQ();
-      $("qq-frame").src = state.qqUrl;
-      $("qq-frame-panel").classList.remove("hidden");
-      $("qq-frame-panel").scrollIntoView({ behavior: "smooth" });
-    } catch (error) { showToast(error.message, true); }
+  $("qq-frame-close").addEventListener("click", function () {
+    $("qq-frame-panel").classList.add("hidden");
+    $("qq-frame").src = "about:blank";
   });
-  $("qq-external").addEventListener("click", function () { if (state.qqUrl) window.open(state.qqUrl, "_blank", "noopener"); });
-  $("feishu-check").addEventListener("click", function () { checkFeishu().catch(function (error) { showToast(error.message, true); }); });
-
-  async function feishuAction(action, button) {
-    button.disabled = true;
-    $("feishu-auth-link").classList.add("hidden");
-    $("feishu-output").textContent = action === "login" ? "等待飞书 CLI 返回授权信息…" : "正在退出飞书…";
-    try {
-      var data = await api("/api/gui/integrations/feishu/" + action, { method: "POST" });
-      $("feishu-output").textContent = typeof data.result === "string" ? data.result : JSON.stringify(data.result, null, 2);
-      var serialized = typeof data.result === "string" ? data.result : JSON.stringify(data.result);
-      var match = serialized.match(/https?:\/\/[^\s"'<>]+/);
-      if (match) {
-        $("feishu-auth-link").href = match[0];
-        $("feishu-auth-link").classList.remove("hidden");
-      }
-      showToast("飞书操作已完成");
-      await checkFeishu();
-    } catch (error) {
-      $("feishu-output").textContent = error.message;
-      showToast(error.message, true);
-    } finally { button.disabled = false; }
-  }
-  $("feishu-login").addEventListener("click", function () { feishuAction("login", this); });
-  $("feishu-logout").addEventListener("click", function () { feishuAction("logout", this); });
 
   document.querySelectorAll(".settings-tab").forEach(function (button) {
     button.addEventListener("click", function () {
@@ -281,14 +421,398 @@
     });
   });
 
-  function listValue(value) { return (value || []).join("\n"); }
-  function readList(id) { return $(id).value.split(/[\n,]/).map(function (item) { return item.trim(); }).filter(Boolean); }
-  function numberValue(id) { return Number($(id).value); }
-  function pretty(value) { return JSON.stringify(value || {}, null, 2); }
-  function parseJson(id, label) {
-    try { return JSON.parse($(id).value || "{}"); }
-    catch (_) { throw new Error(label + "不是有效 JSON"); }
+  function defaultQQBot(index) {
+    return {
+      id: "qq-bot-" + (index + 1),
+      name: "QQ Bot " + (index + 1),
+      enabled: false,
+      onebot_base_url: "http://qq-bridge:3000",
+      access_token: "",
+      webhook_secret: "",
+      request_timeout_seconds: 15,
+      webui_base_url: "http://qq-bridge:6099",
+      webui_public_url: "",
+      webui_public_port: 6099,
+      managed_group_ids: [],
+      administrator_qq_ids: [],
+      announcement_actions: ["get_group_notice", "_get_group_notice"],
+      search_feishu_bot_id: "",
+      tasks: {
+        join_management: { enabled: false, detect_requests: false, execute_management: false, auto_approve: false, auto_reject: false, minimum_confidence: 0.88 },
+        message_detection: { enabled: false, realtime_detection: false, polling_detection: false, analyze: false, handle: false, interval_minutes: 30, window_minutes: 5, risk_threshold: 0.7, max_messages_per_run: 300 },
+        announcement_sync: { enabled: false, auto_sync: false, sync_interval_minutes: 30, sync_on_startup: false, feishu_bot_id: "" }
+      }
+    };
   }
+
+  function defaultFeishuBot(index) {
+    return {
+      id: "feishu-bot-" + (index + 1),
+      name: "飞书 Bot " + (index + 1),
+      enabled: false,
+      driver: "disabled",
+      executable: "feishu",
+      timeout_seconds: 60,
+      search_prefixes: ["搜索 ", "查询 ", "/search "],
+      max_search_results: 5,
+      command_templates: {},
+      archive_payload_stdin: false,
+      extra_environment: {}
+    };
+  }
+
+  function normalizeBotConfig(c) {
+    c.qq.bots = c.qq.bots || [];
+    if (!c.qq.bots.length) {
+      var legacyQQ = defaultQQBot(0);
+      legacyQQ.id = "default";
+      legacyQQ.name = "默认 QQ Bot";
+      ["enabled", "onebot_base_url", "access_token", "webhook_secret", "request_timeout_seconds", "webui_base_url", "webui_public_url", "webui_public_port", "managed_group_ids", "administrator_qq_ids", "announcement_actions"].forEach(function (key) { legacyQQ[key] = clone(c.qq[key]); });
+      legacyQQ.tasks.join_management = {
+        enabled: c.join_approval.enabled,
+        detect_requests: c.join_approval.enabled,
+        execute_management: c.join_approval.enabled,
+        auto_approve: c.join_approval.auto_approve,
+        auto_reject: c.join_approval.auto_reject,
+        minimum_confidence: c.join_approval.minimum_confidence
+      };
+      legacyQQ.tasks.message_detection = {
+        enabled: c.moderation.enabled,
+        realtime_detection: c.moderation.enabled,
+        polling_detection: c.moderation.enabled,
+        analyze: c.moderation.enabled,
+        handle: c.moderation.enabled,
+        interval_minutes: c.moderation.interval_minutes,
+        window_minutes: c.moderation.window_minutes,
+        risk_threshold: c.moderation.risk_threshold,
+        max_messages_per_run: c.moderation.max_messages_per_run
+      };
+      legacyQQ.tasks.announcement_sync = {
+        enabled: c.announcements.enabled,
+        auto_sync: c.announcements.enabled,
+        sync_interval_minutes: c.announcements.sync_interval_minutes,
+        sync_on_startup: c.announcements.sync_on_startup,
+        feishu_bot_id: ""
+      };
+      c.qq.bots.push(legacyQQ);
+    }
+    c.feishu.bots = c.feishu.bots || [];
+    if (!c.feishu.bots.length) {
+      var legacyFeishu = defaultFeishuBot(0);
+      legacyFeishu.id = "default";
+      legacyFeishu.name = "默认飞书 Bot";
+      ["enabled", "driver", "executable", "timeout_seconds", "search_prefixes", "max_search_results", "command_templates", "archive_payload_stdin", "extra_environment"].forEach(function (key) { legacyFeishu[key] = clone(c.feishu[key]); });
+      c.feishu.bots.push(legacyFeishu);
+    }
+  }
+
+  function setField(card, name, value) {
+    var input = card.querySelector('[data-field="' + name + '"]');
+    if (!input) return;
+    if (input.type === "checkbox") input.checked = Boolean(value);
+    else input.value = value == null ? "" : value;
+  }
+
+  function field(card, name) { return card.querySelector('[data-field="' + name + '"]'); }
+
+  function bindTaskCard(taskCard) {
+    var master = taskCard.querySelector('[data-role="master"]');
+    function refresh() { taskCard.classList.toggle("active", master.checked); }
+    master.addEventListener("change", function () {
+      if (!master.checked) {
+        taskCard.querySelectorAll('.task-detail input[type="checkbox"]').forEach(function (input) { input.checked = false; });
+      }
+      refresh();
+    });
+    refresh();
+  }
+
+  function renderQQEditors() {
+    var target = $("qq-bot-editor");
+    target.replaceChildren();
+    state.config.qq.bots.forEach(function (bot, index) {
+      var card = document.createElement("article");
+      card.className = "editor-card qq-editor";
+      card.dataset.index = index;
+      card.innerHTML = [
+        '<div class="editor-head"><div class="editor-title"><span class="editor-index"></span><div><strong></strong><small></small></div></div><div class="button-row"><button type="button" class="button danger" data-remove>删除</button></div></div>',
+        '<div class="editor-body">',
+        '<div class="form-grid connection-fields">',
+        '<label>Bot ID<input data-field="id" pattern="[A-Za-z0-9_-]+" required></label>',
+        '<label>显示名称<input data-field="name" required></label>',
+        '<label class="switch-field span-2"><span><strong>启用这个 QQ Bot</strong><small>关闭后不接收事件，也不运行事务</small></span><input data-field="enabled" type="checkbox"></label>',
+        '<label class="span-2">OneBot HTTP 地址<input data-field="onebot_base_url"></label>',
+        '<label>Access Token<input data-field="access_token" type="password" placeholder="留空保持原值"></label>',
+        '<label>Webhook Secret<input data-field="webhook_secret" type="password" placeholder="留空保持原值"></label>',
+        '<label class="span-2">托管群号<textarea data-field="managed_group_ids" rows="2"></textarea></label>',
+        '<label class="span-2">管理员 QQ<textarea data-field="administrator_qq_ids" rows="2"></textarea></label>',
+        '<label>NapCat 公网端口<input data-field="webui_public_port" type="number"></label>',
+        '<label>NapCat 公网 URL<input data-field="webui_public_url" placeholder="留空自动按端口生成"></label>',
+        '<label class="span-2">公告动作名<textarea data-field="announcement_actions" rows="2"></textarea></label>',
+        '<label class="span-2">管理员搜索使用的飞书 Bot ID<input data-field="search_feishu_bot_id" placeholder="留空使用默认飞书 Bot"></label>',
+        '</div>',
+        '<div class="task-list">',
+        '<section class="task-card" data-task="join"><div class="task-master"><div><strong>入群管理</strong><small>检测申请与实际执行完全分离</small></div><input data-role="master" data-field="join.enabled" type="checkbox"></div><div class="task-detail">',
+        '<label class="switch-field span-2"><span><strong>检测入群消息</strong><small>只登记到 GUI，不分析、不处理</small></span><input data-field="join.detect_requests" type="checkbox"></label>',
+        '<label class="switch-field span-2"><span><strong>执行入群管理</strong><small>开启后自动开启检测，并进入判断与处理链路</small></span><input data-field="join.execute_management" type="checkbox"></label>',
+        '<label class="switch-field"><span><strong>自动同意</strong><small>高置信度 approve</small></span><input data-field="join.auto_approve" type="checkbox"></label>',
+        '<label class="switch-field"><span><strong>自动拒绝</strong><small>建议谨慎启用</small></span><input data-field="join.auto_reject" type="checkbox"></label>',
+        '<label>最低置信度<input data-field="join.minimum_confidence" type="number" min="0" max="1" step="0.01"></label>',
+        '<p class="task-note">只开“检测入群消息”时，申请只会进入记录页；不会调用模型，也不会向 QQ 发出同意或拒绝动作。</p>',
+        '</div></section>',
+        '<section class="task-card" data-task="message"><div class="task-master"><div><strong>消息检测</strong><small>长期登记、轮询窗口、分析与处理可独立组合</small></div><input data-role="master" data-field="message.enabled" type="checkbox"></div><div class="task-detail">',
+        '<label class="switch-field"><span><strong>长期检测</strong><small>消息到达即登记 GUI</small></span><input data-field="message.realtime_detection" type="checkbox"></label>',
+        '<label class="switch-field"><span><strong>轮询检测</strong><small>按间隔检查最近窗口</small></span><input data-field="message.polling_detection" type="checkbox"></label>',
+        '<label class="switch-field"><span><strong>分析</strong><small>生成五分钟消息报告</small></span><input data-field="message.analyze" type="checkbox"></label>',
+        '<label class="switch-field"><span><strong>处理</strong><small>按报告判决并通知管理员</small></span><input data-field="message.handle" type="checkbox"></label>',
+        '<label>轮询间隔（分钟）<input data-field="message.interval_minutes" type="number" min="1"></label>',
+        '<label>分析窗口（分钟）<input data-field="message.window_minutes" type="number" min="1"></label>',
+        '<label>风险阈值<input data-field="message.risk_threshold" type="number" min="0" max="1" step="0.01"></label>',
+        '<label>单次最大消息数<input data-field="message.max_messages_per_run" type="number" min="1"></label>',
+        '<p class="task-note">开启“分析”会自动开启轮询检测；开启“处理”会自动开启轮询检测和分析。处理只向管理员发送判决，不会自动禁言或踢人。</p>',
+        '</div></section>',
+        '<section class="task-card" data-task="announcement"><div class="task-master"><div><strong>公告同步</strong><small>一键全量同步与自动同步</small></div><input data-role="master" data-field="announcement.enabled" type="checkbox"></div><div class="task-detail">',
+        '<label class="switch-field"><span><strong>自动同步</strong><small>定期抓取新公告入库</small></span><input data-field="announcement.auto_sync" type="checkbox"></label>',
+        '<label class="switch-field"><span><strong>启动时同步</strong><small>服务启动后立即抓取一次</small></span><input data-field="announcement.sync_on_startup" type="checkbox"></label>',
+        '<label>同步间隔（分钟）<input data-field="announcement.sync_interval_minutes" type="number" min="1"></label>',
+        '<label>归档到飞书 Bot ID<input data-field="announcement.feishu_bot_id" placeholder="留空使用默认飞书 Bot"></label>',
+        '<p class="task-note">建议保存后先到“Bot 编排”执行一次“一键同步公告”，确认公告库完整，再开启自动同步。</p>',
+        '</div></section>',
+        '</div></div>'
+      ].join("");
+      card.querySelector(".editor-index").textContent = String(index + 1).padStart(2, "0");
+      card.querySelector(".editor-title strong").textContent = bot.name;
+      card.querySelector(".editor-title small").textContent = bot.id;
+      setField(card, "id", bot.id);
+      setField(card, "name", bot.name);
+      setField(card, "enabled", bot.enabled);
+      setField(card, "onebot_base_url", bot.onebot_base_url);
+      setField(card, "access_token", "");
+      setField(card, "webhook_secret", "");
+      setField(card, "managed_group_ids", listValue(bot.managed_group_ids));
+      setField(card, "administrator_qq_ids", listValue(bot.administrator_qq_ids));
+      setField(card, "webui_public_port", bot.webui_public_port);
+      setField(card, "webui_public_url", bot.webui_public_url || "");
+      setField(card, "announcement_actions", listValue(bot.announcement_actions));
+      setField(card, "search_feishu_bot_id", bot.search_feishu_bot_id || "");
+      var join = bot.tasks.join_management;
+      setField(card, "join.enabled", join.enabled);
+      setField(card, "join.detect_requests", join.detect_requests);
+      setField(card, "join.execute_management", join.execute_management);
+      setField(card, "join.auto_approve", join.auto_approve);
+      setField(card, "join.auto_reject", join.auto_reject);
+      setField(card, "join.minimum_confidence", join.minimum_confidence);
+      var message = bot.tasks.message_detection;
+      setField(card, "message.enabled", message.enabled);
+      setField(card, "message.realtime_detection", message.realtime_detection);
+      setField(card, "message.polling_detection", message.polling_detection);
+      setField(card, "message.analyze", message.analyze);
+      setField(card, "message.handle", message.handle);
+      setField(card, "message.interval_minutes", message.interval_minutes);
+      setField(card, "message.window_minutes", message.window_minutes);
+      setField(card, "message.risk_threshold", message.risk_threshold);
+      setField(card, "message.max_messages_per_run", message.max_messages_per_run);
+      var announcement = bot.tasks.announcement_sync;
+      setField(card, "announcement.enabled", announcement.enabled);
+      setField(card, "announcement.auto_sync", announcement.auto_sync);
+      setField(card, "announcement.sync_on_startup", announcement.sync_on_startup);
+      setField(card, "announcement.sync_interval_minutes", announcement.sync_interval_minutes);
+      setField(card, "announcement.feishu_bot_id", announcement.feishu_bot_id || "");
+      card.querySelectorAll(".task-card").forEach(bindTaskCard);
+
+      var joinMaster = field(card, "join.enabled");
+      field(card, "join.execute_management").addEventListener("change", function () {
+        if (this.checked) { joinMaster.checked = true; field(card, "join.detect_requests").checked = true; }
+        joinMaster.dispatchEvent(new Event("change"));
+      });
+      field(card, "join.detect_requests").addEventListener("change", function () {
+        if (this.checked) { joinMaster.checked = true; joinMaster.dispatchEvent(new Event("change")); }
+      });
+      var messageMaster = field(card, "message.enabled");
+      field(card, "message.analyze").addEventListener("change", function () {
+        if (this.checked) { messageMaster.checked = true; field(card, "message.polling_detection").checked = true; }
+        messageMaster.dispatchEvent(new Event("change"));
+      });
+      field(card, "message.handle").addEventListener("change", function () {
+        if (this.checked) {
+          messageMaster.checked = true;
+          field(card, "message.polling_detection").checked = true;
+          field(card, "message.analyze").checked = true;
+        }
+        messageMaster.dispatchEvent(new Event("change"));
+      });
+      ["message.realtime_detection", "message.polling_detection"].forEach(function (name) {
+        field(card, name).addEventListener("change", function () {
+          if (this.checked) { messageMaster.checked = true; messageMaster.dispatchEvent(new Event("change")); }
+        });
+      });
+      var announcementMaster = field(card, "announcement.enabled");
+      ["announcement.auto_sync", "announcement.sync_on_startup"].forEach(function (name) {
+        field(card, name).addEventListener("change", function () {
+          if (this.checked) { announcementMaster.checked = true; announcementMaster.dispatchEvent(new Event("change")); }
+        });
+      });
+      card.querySelector("[data-remove]").addEventListener("click", function () {
+        collectQQBots();
+        state.config.qq.bots.splice(index, 1);
+        renderQQEditors();
+      });
+      target.appendChild(card);
+    });
+    if (!state.config.qq.bots.length) {
+      var empty = document.createElement("div");
+      empty.className = "empty-editor";
+      empty.textContent = "点击“添加 QQ Bot”开始配置。";
+      target.appendChild(empty);
+    }
+  }
+
+  function collectQQBots() {
+    var bots = [];
+    document.querySelectorAll(".qq-editor").forEach(function (card) {
+      var original = state.config.qq.bots[Number(card.dataset.index)] || defaultQQBot(bots.length);
+      var joinEnabled = field(card, "join.enabled").checked;
+      var messageEnabled = field(card, "message.enabled").checked;
+      var announcementEnabled = field(card, "announcement.enabled").checked;
+      bots.push({
+        id: field(card, "id").value.trim(),
+        name: field(card, "name").value.trim(),
+        enabled: field(card, "enabled").checked,
+        onebot_base_url: field(card, "onebot_base_url").value.trim(),
+        access_token: field(card, "access_token").value || original.access_token || "",
+        webhook_secret: field(card, "webhook_secret").value || original.webhook_secret || "",
+        request_timeout_seconds: original.request_timeout_seconds || 15,
+        webui_base_url: original.webui_base_url || "http://qq-bridge:6099",
+        webui_public_url: field(card, "webui_public_url").value.trim(),
+        webui_public_port: numberValue(field(card, "webui_public_port").value, 6099),
+        managed_group_ids: splitList(field(card, "managed_group_ids").value),
+        administrator_qq_ids: splitList(field(card, "administrator_qq_ids").value),
+        announcement_actions: splitList(field(card, "announcement_actions").value),
+        search_feishu_bot_id: field(card, "search_feishu_bot_id").value.trim(),
+        tasks: {
+          join_management: {
+            enabled: joinEnabled,
+            detect_requests: joinEnabled && field(card, "join.detect_requests").checked,
+            execute_management: joinEnabled && field(card, "join.execute_management").checked,
+            auto_approve: joinEnabled && field(card, "join.auto_approve").checked,
+            auto_reject: joinEnabled && field(card, "join.auto_reject").checked,
+            minimum_confidence: numberValue(field(card, "join.minimum_confidence").value, 0.88)
+          },
+          message_detection: {
+            enabled: messageEnabled,
+            realtime_detection: messageEnabled && field(card, "message.realtime_detection").checked,
+            polling_detection: messageEnabled && field(card, "message.polling_detection").checked,
+            analyze: messageEnabled && field(card, "message.analyze").checked,
+            handle: messageEnabled && field(card, "message.handle").checked,
+            interval_minutes: numberValue(field(card, "message.interval_minutes").value, 30),
+            window_minutes: numberValue(field(card, "message.window_minutes").value, 5),
+            risk_threshold: numberValue(field(card, "message.risk_threshold").value, 0.7),
+            max_messages_per_run: numberValue(field(card, "message.max_messages_per_run").value, 300)
+          },
+          announcement_sync: {
+            enabled: announcementEnabled,
+            auto_sync: announcementEnabled && field(card, "announcement.auto_sync").checked,
+            sync_interval_minutes: numberValue(field(card, "announcement.sync_interval_minutes").value, 30),
+            sync_on_startup: announcementEnabled && field(card, "announcement.sync_on_startup").checked,
+            feishu_bot_id: field(card, "announcement.feishu_bot_id").value.trim()
+          }
+        }
+      });
+    });
+    state.config.qq.bots = bots;
+    return bots;
+  }
+
+  function renderFeishuEditors() {
+    var target = $("feishu-bot-editor");
+    target.replaceChildren();
+    state.config.feishu.bots.forEach(function (bot, index) {
+      var card = document.createElement("article");
+      card.className = "editor-card feishu-editor";
+      card.dataset.index = index;
+      card.innerHTML = [
+        '<div class="editor-head"><div class="editor-title"><span class="editor-index"></span><div><strong></strong><small></small></div></div><button type="button" class="button danger" data-remove>删除</button></div>',
+        '<div class="editor-body"><div class="form-grid">',
+        '<label>Bot ID<input data-field="id" pattern="[A-Za-z0-9_-]+" required></label>',
+        '<label>显示名称<input data-field="name" required></label>',
+        '<label class="switch-field span-2"><span><strong>启用这个飞书 Bot</strong><small>使用独立 CLI 登录态和环境变量</small></span><input data-field="enabled" type="checkbox"></label>',
+        '<label>可执行文件<input data-field="executable"></label>',
+        '<label>超时（秒）<input data-field="timeout_seconds" type="number" min="1"></label>',
+        '<label>最大搜索结果<input data-field="max_search_results" type="number" min="1" max="20"></label>',
+        '<label class="switch-field"><span><strong>公告 JSON 走 stdin</strong><small>避免超长命令行</small></span><input data-field="archive_payload_stdin" type="checkbox"></label>',
+        '<label class="span-2">管理员搜索前缀<textarea data-field="search_prefixes" rows="2"></textarea></label>',
+        '<label class="span-2">命令模板（JSON）<textarea data-field="command_templates" class="code-input" rows="10"></textarea></label>',
+        '<label class="span-2">额外环境变量（JSON）<textarea data-field="extra_environment" class="code-input" rows="5"></textarea></label>',
+        '</div></div>'
+      ].join("");
+      card.querySelector(".editor-index").textContent = String(index + 1).padStart(2, "0");
+      card.querySelector(".editor-title strong").textContent = bot.name;
+      card.querySelector(".editor-title small").textContent = bot.id;
+      setField(card, "id", bot.id);
+      setField(card, "name", bot.name);
+      setField(card, "enabled", bot.enabled);
+      setField(card, "executable", bot.executable);
+      setField(card, "timeout_seconds", bot.timeout_seconds);
+      setField(card, "max_search_results", bot.max_search_results);
+      setField(card, "archive_payload_stdin", bot.archive_payload_stdin);
+      setField(card, "search_prefixes", listValue(bot.search_prefixes));
+      setField(card, "command_templates", pretty(bot.command_templates));
+      setField(card, "extra_environment", pretty(bot.extra_environment));
+      card.querySelector("[data-remove]").addEventListener("click", function () {
+        collectFeishuBots();
+        state.config.feishu.bots.splice(index, 1);
+        renderFeishuEditors();
+      });
+      target.appendChild(card);
+    });
+    if (!state.config.feishu.bots.length) {
+      var empty = document.createElement("div");
+      empty.className = "empty-editor";
+      empty.textContent = "点击“添加飞书 Bot”开始配置。";
+      target.appendChild(empty);
+    }
+  }
+
+  function collectFeishuBots() {
+    var bots = [];
+    document.querySelectorAll(".feishu-editor").forEach(function (card) {
+      var original = state.config.feishu.bots[Number(card.dataset.index)] || defaultFeishuBot(bots.length);
+      var enabled = field(card, "enabled").checked;
+      var incomingEnvironment = parseJsonText(field(card, "extra_environment").value, "飞书环境变量");
+      Object.keys(incomingEnvironment).forEach(function (key) {
+        if (["", "***"].indexOf(incomingEnvironment[key]) >= 0 && original.extra_environment && original.extra_environment[key]) {
+          incomingEnvironment[key] = original.extra_environment[key];
+        }
+      });
+      bots.push({
+        id: field(card, "id").value.trim(),
+        name: field(card, "name").value.trim(),
+        enabled: enabled,
+        driver: enabled ? "cli" : "disabled",
+        executable: field(card, "executable").value.trim(),
+        timeout_seconds: numberValue(field(card, "timeout_seconds").value, 60),
+        search_prefixes: splitList(field(card, "search_prefixes").value),
+        max_search_results: numberValue(field(card, "max_search_results").value, 5),
+        command_templates: parseJsonText(field(card, "command_templates").value, "飞书命令模板"),
+        archive_payload_stdin: field(card, "archive_payload_stdin").checked,
+        extra_environment: incomingEnvironment
+      });
+    });
+    state.config.feishu.bots = bots;
+    return bots;
+  }
+
+  $("add-qq-bot").addEventListener("click", function () {
+    collectQQBots();
+    state.config.qq.bots.push(defaultQQBot(state.config.qq.bots.length));
+    renderQQEditors();
+  });
+
+  $("add-feishu-bot").addEventListener("click", function () {
+    collectFeishuBots();
+    state.config.feishu.bots.push(defaultFeishuBot(state.config.feishu.bots.length));
+    renderFeishuEditors();
+  });
 
   function populateSettings(c) {
     $("cfg-environment").value = c.app.environment;
@@ -296,14 +820,6 @@
     $("cfg-dry-run").checked = c.app.dry_run;
     $("cfg-admin-token").value = "";
     $("cfg-secure-cookie").checked = c.gui.secure_cookie;
-    $("cfg-qq-url").value = c.qq.onebot_base_url;
-    $("cfg-qq-token").value = "";
-    $("cfg-qq-secret").value = "";
-    $("cfg-groups").value = listValue(c.qq.managed_group_ids);
-    $("cfg-admins").value = listValue(c.qq.administrator_qq_ids);
-    $("cfg-qq-webui-port").value = c.qq.webui_public_port;
-    $("cfg-qq-webui-url").value = c.qq.webui_public_url || "";
-    $("cfg-notice-actions").value = listValue(c.qq.announcement_actions);
     $("cfg-llm-driver").value = c.llm.driver;
     $("cfg-llm-model").value = c.llm.model;
     $("cfg-llm-url").value = c.llm.base_url;
@@ -311,38 +827,24 @@
     $("cfg-llm-timeout").value = c.llm.timeout_seconds;
     $("cfg-llm-retries").value = c.llm.max_retries;
     $("cfg-llm-json").checked = c.llm.json_response_format;
-    $("cfg-auto-approve").checked = c.join_approval.auto_approve;
-    $("cfg-auto-reject").checked = c.join_approval.auto_reject;
-    $("cfg-confidence").value = c.join_approval.minimum_confidence;
-    $("cfg-join-policy").value = c.join_approval.policy;
-    $("cfg-mod-interval").value = c.moderation.interval_minutes;
-    $("cfg-mod-window").value = c.moderation.window_minutes;
-    $("cfg-risk").value = c.moderation.risk_threshold;
-    $("cfg-max-messages").value = c.moderation.max_messages_per_run;
-    $("cfg-notice-interval").value = c.announcements.sync_interval_minutes;
-    $("cfg-notice-startup").checked = c.announcements.sync_on_startup;
     $("cfg-required-keywords").value = listValue(c.join_approval.required_keywords);
     $("cfg-forbidden-keywords").value = listValue(c.join_approval.forbidden_keywords);
+    $("cfg-join-policy").value = c.join_approval.policy;
     $("cfg-mod-policy").value = c.moderation.policy;
     $("cfg-rule-keywords").value = pretty(c.moderation.rule_keywords);
-    $("cfg-feishu-enabled").checked = c.feishu.enabled;
-    $("cfg-feishu-bin").value = c.feishu.executable;
-    $("cfg-feishu-timeout").value = c.feishu.timeout_seconds;
-    $("cfg-feishu-results").value = c.feishu.max_search_results;
-    $("cfg-feishu-stdin").checked = c.feishu.archive_payload_stdin;
-    $("cfg-search-prefixes").value = listValue(c.feishu.search_prefixes);
-    $("cfg-command-templates").value = pretty(c.feishu.command_templates);
-    $("cfg-feishu-env").value = pretty(c.feishu.extra_environment);
     $("cfg-retention-enabled").checked = c.retention.enabled;
     $("cfg-message-days").value = c.retention.message_days;
     $("cfg-join-days").value = c.retention.join_request_days;
     $("cfg-mod-days").value = c.retention.moderation_run_days;
     $("cfg-audit-days").value = c.retention.audit_days;
+    renderQQEditors();
+    renderFeishuEditors();
   }
 
   async function loadSettings() {
     var data = await api("/api/gui/settings");
     state.config = data.config;
+    normalizeBotConfig(state.config);
     populateSettings(state.config);
   }
 
@@ -352,55 +854,33 @@
     button.disabled = true;
     $("settings-state").textContent = "正在校验并热加载…";
     try {
-      var c = JSON.parse(JSON.stringify(state.config));
+      var c = clone(state.config);
+      c.qq.bots = collectQQBots();
+      c.feishu.bots = collectFeishuBots();
+      c.qq.enabled = c.qq.bots.some(function (bot) { return bot.enabled; });
+      c.feishu.enabled = c.feishu.bots.some(function (bot) { return bot.enabled; });
       c.app.environment = $("cfg-environment").value.trim();
       c.app.log_level = $("cfg-log-level").value;
       c.app.dry_run = $("cfg-dry-run").checked;
       c.app.admin_api_token = $("cfg-admin-token").value;
       c.gui.secure_cookie = $("cfg-secure-cookie").checked;
-      c.qq.onebot_base_url = $("cfg-qq-url").value.trim();
-      c.qq.access_token = $("cfg-qq-token").value;
-      c.qq.webhook_secret = $("cfg-qq-secret").value;
-      c.qq.managed_group_ids = readList("cfg-groups");
-      c.qq.administrator_qq_ids = readList("cfg-admins");
-      c.qq.webui_public_port = numberValue("cfg-qq-webui-port");
-      c.qq.webui_public_url = $("cfg-qq-webui-url").value.trim();
-      c.qq.announcement_actions = readList("cfg-notice-actions");
       c.llm.driver = $("cfg-llm-driver").value;
       c.llm.model = $("cfg-llm-model").value.trim();
       c.llm.base_url = $("cfg-llm-url").value.trim();
       c.llm.api_key = $("cfg-llm-key").value;
-      c.llm.timeout_seconds = numberValue("cfg-llm-timeout");
-      c.llm.max_retries = numberValue("cfg-llm-retries");
+      c.llm.timeout_seconds = numberValue($("cfg-llm-timeout").value, 60);
+      c.llm.max_retries = numberValue($("cfg-llm-retries").value, 2);
       c.llm.json_response_format = $("cfg-llm-json").checked;
-      c.join_approval.auto_approve = $("cfg-auto-approve").checked;
-      c.join_approval.auto_reject = $("cfg-auto-reject").checked;
-      c.join_approval.minimum_confidence = numberValue("cfg-confidence");
+      c.join_approval.required_keywords = splitList($("cfg-required-keywords").value);
+      c.join_approval.forbidden_keywords = splitList($("cfg-forbidden-keywords").value);
       c.join_approval.policy = $("cfg-join-policy").value;
-      c.moderation.interval_minutes = numberValue("cfg-mod-interval");
-      c.moderation.window_minutes = numberValue("cfg-mod-window");
-      c.moderation.risk_threshold = numberValue("cfg-risk");
-      c.moderation.max_messages_per_run = numberValue("cfg-max-messages");
-      c.announcements.sync_interval_minutes = numberValue("cfg-notice-interval");
-      c.announcements.sync_on_startup = $("cfg-notice-startup").checked;
-      c.join_approval.required_keywords = readList("cfg-required-keywords");
-      c.join_approval.forbidden_keywords = readList("cfg-forbidden-keywords");
       c.moderation.policy = $("cfg-mod-policy").value;
-      c.moderation.rule_keywords = parseJson("cfg-rule-keywords", "离线关键词规则");
-      c.feishu.enabled = $("cfg-feishu-enabled").checked;
-      c.feishu.driver = c.feishu.enabled ? "cli" : "disabled";
-      c.feishu.executable = $("cfg-feishu-bin").value.trim();
-      c.feishu.timeout_seconds = numberValue("cfg-feishu-timeout");
-      c.feishu.max_search_results = numberValue("cfg-feishu-results");
-      c.feishu.archive_payload_stdin = $("cfg-feishu-stdin").checked;
-      c.feishu.search_prefixes = readList("cfg-search-prefixes");
-      c.feishu.command_templates = parseJson("cfg-command-templates", "飞书命令模板");
-      c.feishu.extra_environment = parseJson("cfg-feishu-env", "飞书环境变量");
+      c.moderation.rule_keywords = parseJsonText($("cfg-rule-keywords").value, "离线关键词规则");
       c.retention.enabled = $("cfg-retention-enabled").checked;
-      c.retention.message_days = numberValue("cfg-message-days");
-      c.retention.join_request_days = numberValue("cfg-join-days");
-      c.retention.moderation_run_days = numberValue("cfg-mod-days");
-      c.retention.audit_days = numberValue("cfg-audit-days");
+      c.retention.message_days = numberValue($("cfg-message-days").value, 30);
+      c.retention.join_request_days = numberValue($("cfg-join-days").value, 180);
+      c.retention.moderation_run_days = numberValue($("cfg-mod-days").value, 365);
+      c.retention.audit_days = numberValue($("cfg-audit-days").value, 365);
       var result = await api("/api/gui/settings", { method: "PUT", body: { config: c } });
       $("settings-state").textContent = result.restart_required.length ? "已保存；这些字段需重启：" + result.restart_required.join(", ") : "已保存并热加载";
       showToast("配置已保存");
@@ -408,19 +888,21 @@
     } catch (error) {
       $("settings-state").textContent = "保存失败";
       showToast(error.message, true);
-    } finally { button.disabled = false; }
+    } finally {
+      button.disabled = false;
+    }
   });
 
   function recordTitle(kind, item) {
-    if (kind === "joins") return "群 " + item.group_id + " · 申请人 " + item.user_id;
-    if (kind === "moderation") return "群 " + item.group_id + " · 风险 " + item.max_risk;
-    if (kind === "announcements") return "群 " + item.group_id + " · " + (item.title || item.announcement_id);
+    var bot = item.bot_id ? "[" + item.bot_id + "] " : "";
+    if (kind === "joins") return bot + "群 " + item.group_id + " · 申请人 " + item.user_id;
+    if (kind === "messages") return bot + "群 " + item.group_id + " · 发言人 " + item.user_id;
+    if (kind === "moderation") return bot + "群 " + item.group_id + " · 风险 " + item.max_risk;
+    if (kind === "announcements") return bot + "群 " + item.group_id + " · " + (item.title || item.announcement_id);
     return item.action + " · " + item.status;
   }
 
-  function recordTime(kind, item) {
-    return item.received_at || item.created_at || item.last_seen_at || item.window_end || "";
-  }
+  function recordTime(item) { return item.received_at || item.created_at || item.last_seen_at || item.window_end || ""; }
 
   async function loadRecords() {
     var kind = $("record-kind").value;
@@ -444,7 +926,7 @@
       var title = document.createElement("strong");
       title.textContent = recordTitle(kind, item);
       var timeNode = document.createElement("span");
-      timeNode.textContent = recordTime(kind, item);
+      timeNode.textContent = recordTime(item);
       var body = document.createElement("pre");
       body.textContent = JSON.stringify(item, null, 2);
       summary.append(title, timeNode);
@@ -453,6 +935,7 @@
     });
     target.appendChild(list);
   }
+
   $("record-kind").addEventListener("change", function () { loadRecords().catch(function (error) { showToast(error.message, true); }); });
   $("records-refresh").addEventListener("click", function () { loadRecords().catch(function (error) { showToast(error.message, true); }); });
 

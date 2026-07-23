@@ -98,6 +98,42 @@ async def test_join_is_approved_once(tmp_path: Path) -> None:
     assert qq.approvals == [("f1", True)]
 
 
+async def test_join_detection_only_records_without_processing(tmp_path: Path) -> None:
+    values = settings_for(tmp_path).model_dump()
+    values["qq"]["bots"] = [
+        {
+            "id": "observer",
+            "name": "Observer",
+            "managed_group_ids": ["g1"],
+            "administrator_qq_ids": ["a1"],
+            "tasks": {
+                "join_management": {"enabled": True, "detect_requests": True},
+            },
+        }
+    ]
+    settings = Settings.model_validate(values)
+    database = Database(settings.app.database_path)
+    database.initialize()
+    qq = FakeQQ()
+    service = JoinApprovalService(
+        settings, database, FakeEngine(), qq, settings.qq_bot("observer")
+    )
+
+    result = await service.handle(
+        JoinRequest(
+            bot_id="observer",
+            event_id="e-observer",
+            flag="f-observer",
+            group_id="g1",
+            user_id="u1",
+        )
+    )
+
+    assert result == "detected"
+    assert qq.approvals == []
+    assert qq.notifications == []
+
+
 async def test_moderation_alerts_only_above_threshold(tmp_path: Path) -> None:
     settings = settings_for(tmp_path)
     database = Database(settings.app.database_path)

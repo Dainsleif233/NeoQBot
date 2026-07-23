@@ -62,3 +62,49 @@ def test_save_does_not_persist_environment_secret(tmp_path: Path, monkeypatch) -
 
     saved = path.read_text(encoding="utf-8")
     assert "secret-from-environment" not in saved
+
+
+def test_multi_bot_task_dependencies_are_applied() -> None:
+    settings = Settings.model_validate(
+        {
+            "qq": {
+                "bots": [
+                    {
+                        "id": "worker",
+                        "name": "Worker",
+                        "managed_group_ids": ["g1"],
+                        "administrator_qq_ids": ["a1"],
+                        "tasks": {
+                            "join_management": {"execute_management": True},
+                            "message_detection": {"handle": True},
+                            "announcement_sync": {"auto_sync": True},
+                        },
+                    }
+                ]
+            }
+        }
+    )
+
+    bot = settings.qq_bot("worker")
+    assert bot is not None
+    assert bot.tasks.join_management.enabled is True
+    assert bot.tasks.join_management.detect_requests is True
+    assert bot.tasks.message_detection.enabled is True
+    assert bot.tasks.message_detection.polling_detection is True
+    assert bot.tasks.message_detection.analyze is True
+    assert bot.tasks.announcement_sync.enabled is True
+
+
+def test_legacy_single_bot_config_remains_effective() -> None:
+    settings = Settings.model_validate(
+        {
+            "qq": {"managed_group_ids": ["g1"], "administrator_qq_ids": ["a1"]},
+            "moderation": {"enabled": False},
+        }
+    )
+
+    bot = settings.qq_bot()
+    assert bot is not None
+    assert bot.id == "default"
+    assert bot.managed_group_ids == ["g1"]
+    assert bot.tasks.message_detection.enabled is False

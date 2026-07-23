@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -22,7 +22,7 @@ class AppConfig(BaseModel):
     dry_run: bool = True
 
 
-class QQConfig(BaseModel):
+class QQConnectionConfig(BaseModel):
     enabled: bool = True
     onebot_base_url: str = "http://qq-bridge:3000"
     access_token: str = ""
@@ -43,6 +43,87 @@ class QQConfig(BaseModel):
         if isinstance(value, list):
             return [str(item).strip() for item in value if str(item).strip()]
         return value
+
+
+class QQJoinTaskConfig(BaseModel):
+    enabled: bool = False
+    detect_requests: bool = False
+    execute_management: bool = False
+    auto_approve: bool = False
+    auto_reject: bool = False
+    minimum_confidence: float = Field(default=0.88, ge=0, le=1)
+
+    @model_validator(mode="after")
+    def apply_dependencies(self) -> QQJoinTaskConfig:
+        if self.execute_management:
+            self.enabled = True
+            self.detect_requests = True
+        if self.detect_requests:
+            self.enabled = True
+        return self
+
+
+class QQMessageTaskConfig(BaseModel):
+    enabled: bool = False
+    realtime_detection: bool = False
+    polling_detection: bool = False
+    analyze: bool = False
+    handle: bool = False
+    interval_minutes: int = Field(default=30, ge=1, le=1440)
+    window_minutes: int = Field(default=5, ge=1, le=1440)
+    risk_threshold: float = Field(default=0.7, ge=0, le=1)
+    max_messages_per_run: int = Field(default=300, ge=1, le=5000)
+
+    @model_validator(mode="after")
+    def apply_dependencies(self) -> QQMessageTaskConfig:
+        if self.handle:
+            self.enabled = True
+            self.polling_detection = True
+            self.analyze = True
+        if self.analyze:
+            self.enabled = True
+            self.polling_detection = True
+        if self.realtime_detection or self.polling_detection:
+            self.enabled = True
+        return self
+
+
+class QQAnnouncementTaskConfig(BaseModel):
+    enabled: bool = False
+    auto_sync: bool = False
+    sync_interval_minutes: int = Field(default=30, ge=1, le=10080)
+    sync_on_startup: bool = False
+    feishu_bot_id: str = ""
+
+    @model_validator(mode="after")
+    def apply_dependencies(self) -> QQAnnouncementTaskConfig:
+        if self.auto_sync or self.sync_on_startup:
+            self.enabled = True
+        return self
+
+
+class QQTaskConfig(BaseModel):
+    join_management: QQJoinTaskConfig = Field(default_factory=QQJoinTaskConfig)
+    message_detection: QQMessageTaskConfig = Field(default_factory=QQMessageTaskConfig)
+    announcement_sync: QQAnnouncementTaskConfig = Field(default_factory=QQAnnouncementTaskConfig)
+
+
+class QQBotConfig(QQConnectionConfig):
+    id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    name: str = Field(default="QQ Bot", min_length=1, max_length=80)
+    tasks: QQTaskConfig = Field(default_factory=QQTaskConfig)
+    search_feishu_bot_id: str = ""
+
+
+class QQConfig(QQConnectionConfig):
+    bots: list[QQBotConfig] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def unique_bot_ids(self) -> QQConfig:
+        identifiers = [bot.id for bot in self.bots]
+        if len(identifiers) != len(set(identifiers)):
+            raise ValueError("qq.bots 中的 id 必须唯一")
+        return self
 
 
 class LLMConfig(BaseModel):
@@ -85,7 +166,7 @@ class AnnouncementConfig(BaseModel):
     sync_on_startup: bool = True
 
 
-class FeishuConfig(BaseModel):
+class FeishuConnectionConfig(BaseModel):
     enabled: bool = False
     driver: Literal["cli", "disabled"] = "disabled"
     executable: str = "feishu"
@@ -97,6 +178,22 @@ class FeishuConfig(BaseModel):
     command_templates: dict[str, list[str]] = Field(default_factory=dict)
     archive_payload_stdin: bool = False
     extra_environment: dict[str, str] = Field(default_factory=dict)
+
+
+class FeishuBotConfig(FeishuConnectionConfig):
+    id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    name: str = Field(default="飞书 Bot", min_length=1, max_length=80)
+
+
+class FeishuConfig(FeishuConnectionConfig):
+    bots: list[FeishuBotConfig] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def unique_bot_ids(self) -> FeishuConfig:
+        identifiers = [bot.id for bot in self.bots]
+        if len(identifiers) != len(set(identifiers)):
+            raise ValueError("feishu.bots 中的 id 必须唯一")
+        return self
 
 
 class RuntimeConfig(BaseModel):
@@ -139,6 +236,95 @@ class Settings(BaseSettings):
     retention: RetentionConfig = Field(default_factory=RetentionConfig)
     gui: GuiConfig = Field(default_factory=GuiConfig)
 
+    def effective_qq_bots(self) -> list[QQBotConfig]:
+        if self.qq.bots:
+            return self.qq.bots
+        return [
+            QQBotConfig(
+                id="default",
+                name="默认 QQ Bot",
+                enabled=self.qq.enabled,
+                onebot_base_url=self.qq.onebot_base_url,
+                access_token=self.qq.access_token,
+                webhook_secret=self.qq.webhook_secret,
+                request_timeout_seconds=self.qq.request_timeout_seconds,
+                webui_base_url=self.qq.webui_base_url,
+                webui_public_url=self.qq.webui_public_url,
+                webui_public_port=self.qq.webui_public_port,
+                managed_group_ids=self.qq.managed_group_ids,
+                administrator_qq_ids=self.qq.administrator_qq_ids,
+                announcement_actions=self.qq.announcement_actions,
+                tasks=QQTaskConfig(
+                    join_management=QQJoinTaskConfig(
+                        enabled=self.join_approval.enabled,
+                        detect_requests=self.join_approval.enabled,
+                        execute_management=self.join_approval.enabled,
+                        auto_approve=self.join_approval.auto_approve,
+                        auto_reject=self.join_approval.auto_reject,
+                        minimum_confidence=self.join_approval.minimum_confidence,
+                    ),
+                    message_detection=QQMessageTaskConfig(
+                        enabled=self.moderation.enabled,
+                        realtime_detection=self.moderation.enabled,
+                        polling_detection=self.moderation.enabled,
+                        analyze=self.moderation.enabled,
+                        handle=self.moderation.enabled,
+                        interval_minutes=self.moderation.interval_minutes,
+                        window_minutes=self.moderation.window_minutes,
+                        risk_threshold=self.moderation.risk_threshold,
+                        max_messages_per_run=self.moderation.max_messages_per_run,
+                    ),
+                    announcement_sync=QQAnnouncementTaskConfig(
+                        enabled=self.announcements.enabled,
+                        auto_sync=self.announcements.enabled,
+                        sync_interval_minutes=self.announcements.sync_interval_minutes,
+                        sync_on_startup=self.announcements.sync_on_startup,
+                    ),
+                ),
+            )
+        ]
+
+    def effective_feishu_bots(self) -> list[FeishuBotConfig]:
+        if self.feishu.bots:
+            return self.feishu.bots
+        return [
+            FeishuBotConfig(
+                id="default",
+                name="默认飞书 Bot",
+                enabled=self.feishu.enabled,
+                driver=self.feishu.driver,
+                executable=self.feishu.executable,
+                timeout_seconds=self.feishu.timeout_seconds,
+                search_prefixes=self.feishu.search_prefixes,
+                max_search_results=self.feishu.max_search_results,
+                command_templates=self.feishu.command_templates,
+                archive_payload_stdin=self.feishu.archive_payload_stdin,
+                extra_environment=self.feishu.extra_environment,
+            )
+        ]
+
+    def qq_bot(self, bot_id: str | None = None) -> QQBotConfig | None:
+        bots = self.effective_qq_bots()
+        if bot_id is None:
+            return bots[0] if bots else None
+        return next((bot for bot in bots if bot.id == bot_id), None)
+
+    def feishu_bot(self, bot_id: str | None = None) -> FeishuBotConfig | None:
+        bots = self.effective_feishu_bots()
+        if bot_id is None:
+            return bots[0] if bots else None
+        return next((bot for bot in bots if bot.id == bot_id), None)
+
+    def managed_group_ids(self) -> list[str]:
+        return sorted(
+            {
+                group_id
+                for bot in self.effective_qq_bots()
+                if bot.enabled
+                for group_id in bot.managed_group_ids
+            }
+        )
+
     @classmethod
     def load(cls, path: str | Path | None = None) -> Settings:
         config_path = Path(path or "config.yaml")
@@ -178,38 +364,77 @@ class Settings(BaseSettings):
         data = self.model_dump()
         data["qq"]["access_token"] = "***" if self.qq.access_token else ""
         data["qq"]["webhook_secret"] = "***" if self.qq.webhook_secret else ""
+        for bot in data["qq"]["bots"]:
+            bot["access_token"] = "***" if bot["access_token"] else ""
+            bot["webhook_secret"] = "***" if bot["webhook_secret"] else ""
         data["llm"]["api_key"] = "***" if self.llm.api_key else ""
         data["app"]["admin_api_token"] = "***" if self.app.admin_api_token else ""
         data["feishu"]["extra_environment"] = {key: "***" for key in self.feishu.extra_environment}
+        for bot in data["feishu"]["bots"]:
+            bot["extra_environment"] = {key: "***" for key in bot["extra_environment"]}
         data["gui"]["bootstrap_password"] = "***"
         return json.loads(json.dumps(data, ensure_ascii=False, default=str))
 
     def diagnostics(self) -> dict[str, list[str]]:
         errors: list[str] = []
         warnings: list[str] = []
-        if self.qq.enabled:
-            if not self.qq.managed_group_ids:
-                errors.append("qq.managed_group_ids 不能为空")
-            if not self.qq.administrator_qq_ids:
-                errors.append("qq.administrator_qq_ids 不能为空")
-            if not self.qq.access_token:
-                warnings.append("qq.access_token 未设置")
-            if not self.qq.webhook_secret:
-                warnings.append("qq.webhook_secret 未设置，Webhook 无法校验 HMAC")
+        qq_bots = [bot for bot in self.effective_qq_bots() if bot.enabled]
+        if not qq_bots:
+            warnings.append("没有启用任何 QQ Bot")
+        for bot in qq_bots:
+            prefix = "qq" if not self.qq.bots else f"qq.bots.{bot.id}"
+            if not bot.managed_group_ids:
+                errors.append(f"{prefix}.managed_group_ids 不能为空")
+            if not bot.administrator_qq_ids:
+                errors.append(f"{prefix}.administrator_qq_ids 不能为空")
+            if not bot.access_token:
+                warnings.append(f"{prefix}.access_token 未设置")
+            if not bot.webhook_secret:
+                warnings.append(f"{prefix}.webhook_secret 未设置，Webhook 无法校验 HMAC")
         if self.llm.driver == "openai_compatible":
             if not self.llm.api_key:
                 errors.append("llm.api_key 未设置")
             if not self.llm.model or self.llm.model.startswith("replace-with"):
                 errors.append("llm.model 仍是占位值")
-        if self.feishu.enabled:
-            for action in ("archive_announcement", "search"):
-                if not self.feishu.command_templates.get(action):
-                    errors.append(f"feishu.command_templates.{action} 未配置")
+        feishu_bots = self.effective_feishu_bots()
+        default_feishu = next((bot for bot in feishu_bots if bot.enabled), feishu_bots[0])
+        archive_targets = {
+            bot.tasks.announcement_sync.feishu_bot_id or default_feishu.id
+            for bot in qq_bots
+            if bot.tasks.announcement_sync.enabled
+        }
+        search_targets = {
+            bot.search_feishu_bot_id
+            or bot.tasks.announcement_sync.feishu_bot_id
+            or default_feishu.id
+            for bot in qq_bots
+        }
+        for bot in feishu_bots:
+            if not bot.enabled:
+                continue
+            prefix = "feishu" if not self.feishu.bots else f"feishu.bots.{bot.id}"
+            if bot.id in archive_targets and not bot.command_templates.get(
+                "archive_announcement"
+            ):
+                errors.append(f"{prefix}.command_templates.archive_announcement 未配置")
+            if bot.id in search_targets and not bot.command_templates.get("search"):
+                errors.append(f"{prefix}.command_templates.search 未配置")
+        feishu_ids = {bot.id for bot in feishu_bots}
+        for bot in qq_bots:
+            announcement_target = bot.tasks.announcement_sync.feishu_bot_id
+            if announcement_target and announcement_target not in feishu_ids:
+                errors.append(
+                    f"qq.bots.{bot.id}.tasks.announcement_sync.feishu_bot_id 指向未知飞书 Bot"
+                )
+            if bot.search_feishu_bot_id and bot.search_feishu_bot_id not in feishu_ids:
+                errors.append(f"qq.bots.{bot.id}.search_feishu_bot_id 指向未知飞书 Bot")
         if not self.app.admin_api_token:
             warnings.append("app.admin_api_token 未设置，管理 API 将禁用")
         if self.app.dry_run:
             warnings.append("app.dry_run=true，所有 QQ 出站动作均被抑制")
-        if self.join_approval.auto_reject:
+        if self.join_approval.auto_reject or any(
+            bot.tasks.join_management.auto_reject for bot in qq_bots
+        ):
             warnings.append("join_approval.auto_reject=true，建议保持人工拒绝")
         if self.gui.bootstrap_username == "admin" and self.gui.bootstrap_password == "muaadmin":
             warnings.append("GUI 仍配置默认初始凭据，首次登录后必须修改密码")

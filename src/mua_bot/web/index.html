@@ -1,33 +1,30 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="color-scheme" content="dark">
+  <meta name="color-scheme" content="dark light">
   <title>MUA-Bot 管理中心</title>
+  <link rel="icon" type="image/png" href="/gui/assets/img/muaball.png">
+  <link rel="apple-touch-icon" href="/gui/assets/img/muaball.png">
   <link rel="stylesheet" href="/gui/assets/app.css">
 </head>
 <body>
-  <div class="ambient ambient-one"></div>
-  <div class="ambient ambient-two"></div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
   <main id="login-view" class="auth-layout hidden">
     <section class="auth-brand">
-      <div class="brand-mark">M</div>
+      <img class="brand-logo hero-logo" src="/gui/assets/img/muaball.png" alt="MUA-Bot">
       <p class="eyebrow">Minecraft Union Alliance</p>
-      <h1>群治理，从清晰可控开始。</h1>
-      <p class="lead">连接真人 QQ、飞书与 Agnes AI，在一个后台完成审批、巡检、归档和检索。</p>
-      <div class="auth-features">
-        <span>结构化审核</span><span>全程审计</span><span>人工兜底</span>
-      </div>
+      <h1>让每个 Bot<br>只做它该做的事。</h1>
+      <p class="lead">多账号接入、事务拆分、消息登记、分析判决与公告归档，都在一个克制的控制台里完成。</p>
     </section>
     <section class="auth-card">
-      <div>
-        <p class="eyebrow">MUA-Bot Console</p>
-        <h2>管理员登录</h2>
-        <p class="muted">首次部署使用 admin / muaadmin，登录后必须修改密码。</p>
+      <div class="auth-card-head">
+        <img class="brand-logo card-logo" src="/gui/assets/img/muaball.png" alt="MUA-Bot">
+        <div><p class="eyebrow">MUA-Bot Console</p><h2>管理员登录</h2></div>
       </div>
+      <p class="muted">首次部署使用 admin / muaadmin，登录后必须修改密码。</p>
       <form id="login-form" class="stack-lg">
         <label>用户名<input id="login-username" autocomplete="username" value="admin" required></label>
         <label>密码<input id="login-password" type="password" autocomplete="current-password" required></label>
@@ -39,17 +36,17 @@
 
   <main id="password-view" class="auth-layout hidden">
     <section class="auth-brand">
-      <div class="brand-mark">M</div>
+      <img class="brand-logo hero-logo" src="/gui/assets/img/muaball.png" alt="MUA-Bot">
       <p class="eyebrow">Security checkpoint</p>
       <h1>先换掉默认密码。</h1>
       <p class="lead">这是保护 QQ 登录态、飞书文档与群聊审计数据的第一道边界。</p>
     </section>
     <section class="auth-card">
-      <div>
-        <p class="eyebrow">首次登录</p>
-        <h2>设置新密码</h2>
-        <p class="muted">至少 10 个字符，不能继续使用 muaadmin。</p>
+      <div class="auth-card-head">
+        <img class="brand-logo card-logo" src="/gui/assets/img/muaball.png" alt="MUA-Bot">
+        <div><p class="eyebrow">首次登录</p><h2>设置新密码</h2></div>
       </div>
+      <p class="muted">至少 10 个字符，不能继续使用 muaadmin。</p>
       <form id="password-form" class="stack-lg">
         <label>当前密码<input id="current-password" type="password" autocomplete="current-password" required></label>
         <label>新密码<input id="new-password" type="password" autocomplete="new-password" minlength="10" required></label>
@@ -61,49 +58,52 @@
 
   <div id="app-view" class="app-shell hidden">
     <aside class="sidebar">
-      <div class="sidebar-brand"><div class="brand-mark small">M</div><div><strong>MUA-Bot</strong><span>Control plane</span></div></div>
+      <div class="sidebar-brand">
+        <img class="brand-logo sidebar-logo" src="/gui/assets/img/muaball.png" alt="MUA-Bot">
+        <div><strong>MUA-Bot</strong><span>Control plane</span></div>
+      </div>
       <nav id="main-nav">
-        <button class="nav-item active" data-view="dashboard"><span>◫</span>运行概览</button>
-        <button class="nav-item" data-view="integrations"><span>◎</span>平台登录</button>
-        <button class="nav-item" data-view="settings"><span>◇</span>系统设置</button>
-        <button class="nav-item" data-view="records"><span>≡</span>记录与审计</button>
+        <button class="nav-item active" data-view="dashboard"><span>01</span>运行概览</button>
+        <button class="nav-item" data-view="integrations"><span>02</span>Bot 编排</button>
+        <button class="nav-item" data-view="settings"><span>03</span>系统设置</button>
+        <button class="nav-item" data-view="records"><span>04</span>记录与审计</button>
       </nav>
       <div class="sidebar-footer">
         <div class="user-chip"><span class="avatar">A</span><div><strong id="current-user">admin</strong><small>Administrator</small></div></div>
-        <button id="logout-button" class="icon-button" title="退出登录">↗</button>
+        <button id="logout-button" class="icon-button" title="退出登录">退出</button>
       </div>
     </aside>
 
     <div class="workspace">
       <header class="topbar">
-        <button id="menu-button" class="menu-button">☰</button>
+        <button id="menu-button" class="menu-button" aria-label="打开导航">菜单</button>
         <div><p class="eyebrow" id="page-kicker">Overview</p><h1 id="page-title">运行概览</h1></div>
-        <div class="topbar-actions"><span id="connection-pill" class="pill success">服务在线</span><button id="refresh-button" class="button ghost">刷新</button></div>
+        <div class="topbar-actions">
+          <span id="connection-pill" class="pill">服务在线</span>
+          <button id="theme-button" class="button ghost" type="button">切换纯白</button>
+          <button id="refresh-button" class="button ghost" type="button">刷新</button>
+        </div>
       </header>
 
       <section id="view-dashboard" class="view active">
-        <div id="security-banner" class="banner warning hidden"></div>
+        <div id="security-banner" class="banner hidden"></div>
         <div class="metric-grid">
-          <article class="metric-card"><span>入群申请</span><strong id="count-joins">—</strong><small>已审计总数</small></article>
+          <article class="metric-card"><span>入群申请</span><strong id="count-joins">—</strong><small>已登记总数</small></article>
           <article class="metric-card"><span>群聊消息</span><strong id="count-messages">—</strong><small>保留期内</small></article>
-          <article class="metric-card"><span>风控运行</span><strong id="count-runs">—</strong><small>固定窗口</small></article>
-          <article class="metric-card"><span>公告版本</span><strong id="count-notices">—</strong><small>永久归档</small></article>
+          <article class="metric-card"><span>分析报告</span><strong id="count-runs">—</strong><small>五分钟窗口</small></article>
+          <article class="metric-card"><span>公告版本</span><strong id="count-notices">—</strong><small>公告库记录</small></article>
         </div>
         <div class="two-column">
           <article class="panel">
-            <div class="panel-heading"><div><p class="eyebrow">Automation</p><h2>自动监管</h2></div><span id="dry-run-badge" class="pill">读取中</span></div>
-            <div class="status-list">
-              <div><span class="status-dot"></span><div><strong>入群审核</strong><p>模型判断 + 置信度阈值 + 人工兜底</p></div></div>
-              <div><span class="status-dot"></span><div><strong>群聊巡检</strong><p>每 30 分钟检查最近 5 分钟消息</p></div></div>
-              <div><span class="status-dot"></span><div><strong>公告归档</strong><p>本地版本化，飞书失败自动重试</p></div></div>
-            </div>
+            <div class="panel-heading"><div><p class="eyebrow">Bot chain</p><h2>协同链路</h2></div><span id="dry-run-badge" class="pill">读取中</span></div>
+            <div id="bot-summary" class="bot-summary"></div>
           </article>
           <article class="panel">
             <div class="panel-heading"><div><p class="eyebrow">Manual run</p><h2>立即执行</h2></div></div>
             <div class="action-grid">
-              <button class="action-button" data-job="moderation"><span>风险巡检</span><small>运行所有托管群</small></button>
-              <button class="action-button" data-job="announcements"><span>同步公告</span><small>QQ → SQLite → 飞书</small></button>
-              <button class="action-button" data-job="maintenance"><span>清理过期数据</span><small>应用保留期策略</small></button>
+              <button class="action-button" data-job="moderation"><span>运行消息分析</span><small>所有已启用的分析事务</small></button>
+              <button class="action-button" data-job="announcements"><span>一键同步全部公告</span><small>所有已启用的公告事务</small></button>
+              <button class="action-button" data-job="maintenance"><span>清理过期数据</span><small>应用数据保留策略</small></button>
             </div>
             <pre id="job-output" class="console-output">等待操作…</pre>
           </article>
@@ -115,63 +115,36 @@
       </section>
 
       <section id="view-integrations" class="view">
-        <div class="integration-grid">
-          <article class="integration-card qq-card">
-            <div class="integration-logo">QQ</div>
-            <div class="integration-copy"><p class="eyebrow">OneBot 11 / NapCat</p><h2>真人 QQ 登录</h2><p>通过 NapCat WebUI 扫码登录专用 QQ 账号，再由 MUA-Bot 检查 OneBot 连接。</p></div>
-            <div id="qq-status" class="integration-status">尚未检测</div>
-            <div class="button-row"><button id="qq-check" class="button secondary">检测登录状态</button><button id="qq-open" class="button primary">打开 QQ 登录页</button></div>
-            <p class="fine-print">NapCat 登录页使用独立 6099 端口；请设置 WebUI token，并通过防火墙限制来源。</p>
-          </article>
-          <article class="integration-card feishu-card">
-            <div class="integration-logo">飞</div>
-            <div class="integration-copy"><p class="eyebrow">Official Feishu CLI</p><h2>真人飞书登录</h2><p>调用配置的飞书 CLI 登录命令。命令返回的授权链接或二维码信息会显示在下方。</p></div>
-            <div id="feishu-status" class="integration-status">尚未检测</div>
-            <div class="button-row"><button id="feishu-check" class="button secondary">检测登录状态</button><button id="feishu-login" class="button primary">开始飞书登录</button><button id="feishu-logout" class="button ghost">退出飞书</button></div>
-            <a id="feishu-auth-link" class="button secondary hidden auth-link" target="_blank" rel="noopener">打开飞书授权链接</a>
-            <pre id="feishu-output" class="console-output">请先在系统设置中配置 login / logout / doctor 命令模板。</pre>
-          </article>
-        </div>
+        <article class="panel intro-panel">
+          <p class="eyebrow">Multi-bot workspace</p>
+          <h2>账号与事务运行状态</h2>
+          <p class="muted">每个 QQ Bot 使用独立 Webhook 与 OneBot 连接，并可承担一个或多个事务。飞书 Bot 可分别用于公告归档或管理员搜索。</p>
+        </article>
+        <div class="section-heading"><div><p class="eyebrow">QQ / OneBot</p><h2>QQ Bot</h2></div></div>
+        <div id="qq-integrations" class="integration-grid"></div>
+        <div class="section-heading"><div><p class="eyebrow">Feishu CLI</p><h2>飞书 Bot</h2></div></div>
+        <div id="feishu-integrations" class="integration-grid"></div>
         <article id="qq-frame-panel" class="panel hidden">
-          <div class="panel-heading"><div><p class="eyebrow">NapCat WebUI</p><h2>QQ 扫码登录</h2></div><button id="qq-external" class="button ghost">新窗口打开</button></div>
-          <iframe id="qq-frame" class="login-frame" title="NapCat QQ 登录页面"></iframe>
-          <p class="fine-print">若页面拒绝嵌入，请使用“新窗口打开”。登录成功后返回本页点击“检测登录状态”。</p>
+          <div class="panel-heading"><div><p class="eyebrow">NapCat WebUI</p><h2 id="qq-frame-title">QQ 登录</h2></div><button id="qq-frame-close" class="button ghost" type="button">关闭</button></div>
+          <iframe id="qq-frame" class="login-frame" title="NapCat 登录"></iframe>
         </article>
       </section>
 
       <section id="view-settings" class="view">
         <form id="settings-form" class="settings-layout">
-          <div class="settings-nav">
-            <button type="button" class="settings-tab active" data-section="general">基础</button>
-            <button type="button" class="settings-tab" data-section="qq">QQ</button>
+          <aside class="settings-nav">
+            <button type="button" class="settings-tab active" data-section="bots">Bot 与事务</button>
             <button type="button" class="settings-tab" data-section="llm">大模型</button>
-            <button type="button" class="settings-tab" data-section="governance">治理策略</button>
-            <button type="button" class="settings-tab" data-section="feishu">飞书</button>
+            <button type="button" class="settings-tab" data-section="policy">策略</button>
             <button type="button" class="settings-tab" data-section="retention">数据保留</button>
-          </div>
+            <button type="button" class="settings-tab" data-section="system">系统</button>
+          </aside>
           <div class="settings-content">
-            <section class="settings-section active" data-settings-section="general">
-              <div class="section-title"><p class="eyebrow">General</p><h2>基础设置</h2></div>
-              <div class="form-grid">
-                <label>运行环境<input id="cfg-environment"></label>
-                <label>日志级别<select id="cfg-log-level"><option>DEBUG</option><option>INFO</option><option>WARNING</option><option>ERROR</option></select></label>
-                <label class="switch-field"><span><strong>安全演练模式</strong><small>抑制所有 QQ 出站动作</small></span><input id="cfg-dry-run" type="checkbox"></label>
-                <label>管理 API Token<input id="cfg-admin-token" type="password" placeholder="留空保持原值"></label>
-                <label class="switch-field"><span><strong>HTTPS 安全 Cookie</strong><small>反向代理启用 HTTPS 后开启</small></span><input id="cfg-secure-cookie" type="checkbox"></label>
-              </div>
-            </section>
-            <section class="settings-section" data-settings-section="qq">
-              <div class="section-title"><p class="eyebrow">OneBot</p><h2>QQ 接入</h2></div>
-              <div class="form-grid">
-                <label class="span-2">OneBot HTTP 地址<input id="cfg-qq-url" placeholder="http://qq-bridge:3000"></label>
-                <label>Access Token<input id="cfg-qq-token" type="password" placeholder="留空保持原值"></label>
-                <label>Webhook Secret<input id="cfg-qq-secret" type="password" placeholder="留空保持原值"></label>
-                <label class="span-2">托管群号<textarea id="cfg-groups" rows="3" placeholder="每行或逗号分隔"></textarea></label>
-                <label class="span-2">管理员 QQ<textarea id="cfg-admins" rows="3" placeholder="每行或逗号分隔"></textarea></label>
-                <label>NapCat 公网端口<input id="cfg-qq-webui-port" type="number"></label>
-                <label>NapCat 自定义公网 URL<input id="cfg-qq-webui-url" placeholder="留空自动使用当前主机:6099"></label>
-                <label class="span-2">公告动作名<textarea id="cfg-notice-actions" rows="2"></textarea></label>
-              </div>
+            <section class="settings-section active" data-settings-section="bots">
+              <div class="section-title split-title"><div><p class="eyebrow">Orchestration</p><h2>QQ Bot 与事务</h2><p class="muted">打开事务后才会展开详细设置。执行类开关会自动补齐依赖。</p></div><button id="add-qq-bot" class="button secondary" type="button">添加 QQ Bot</button></div>
+              <div id="qq-bot-editor" class="bot-editor-list"></div>
+              <div class="section-title split-title sub-section-title"><div><p class="eyebrow">Archive targets</p><h2>飞书 Bot</h2></div><button id="add-feishu-bot" class="button secondary" type="button">添加飞书 Bot</button></div>
+              <div id="feishu-bot-editor" class="bot-editor-list"></div>
             </section>
             <section class="settings-section" data-settings-section="llm">
               <div class="section-title"><p class="eyebrow">Agnes AI</p><h2>大模型</h2></div>
@@ -185,36 +158,14 @@
                 <label class="switch-field span-2"><span><strong>发送 response_format</strong><small>端点不兼容时关闭</small></span><input id="cfg-llm-json" type="checkbox"></label>
               </div>
             </section>
-            <section class="settings-section" data-settings-section="governance">
-              <div class="section-title"><p class="eyebrow">Policy</p><h2>治理策略</h2></div>
+            <section class="settings-section" data-settings-section="policy">
+              <div class="section-title"><p class="eyebrow">Shared policy</p><h2>共享判断策略</h2><p class="muted">账号级开关与阈值在“Bot 与事务”中设置；这里维护所有 Bot 共用的判断文本与离线规则。</p></div>
               <div class="form-grid">
-                <label class="switch-field"><span><strong>自动同意入群</strong><small>仅高置信度 approve</small></span><input id="cfg-auto-approve" type="checkbox"></label>
-                <label class="switch-field"><span><strong>自动拒绝入群</strong><small>强烈建议保持关闭</small></span><input id="cfg-auto-reject" type="checkbox"></label>
-                <label>最低置信度<input id="cfg-confidence" type="number" min="0" max="1" step="0.01"></label>
-                <label>巡检间隔（分钟）<input id="cfg-mod-interval" type="number"></label>
-                <label>监测窗口（分钟）<input id="cfg-mod-window" type="number"></label>
-                <label>风险阈值<input id="cfg-risk" type="number" min="0" max="1" step="0.01"></label>
-                <label>单次最大消息数<input id="cfg-max-messages" type="number"></label>
-                <label>公告同步间隔（分钟）<input id="cfg-notice-interval" type="number"></label>
-                <label class="switch-field"><span><strong>启动时同步公告</strong><small>容器启动后立即拉取</small></span><input id="cfg-notice-startup" type="checkbox"></label>
-                <label class="span-2">入群必要关键词<textarea id="cfg-required-keywords" rows="2" placeholder="每行或逗号分隔"></textarea></label>
-                <label class="span-2">入群禁止关键词<textarea id="cfg-forbidden-keywords" rows="2" placeholder="每行或逗号分隔"></textarea></label>
+                <label class="span-2">入群必要关键词<textarea id="cfg-required-keywords" rows="2"></textarea></label>
+                <label class="span-2">入群禁止关键词<textarea id="cfg-forbidden-keywords" rows="2"></textarea></label>
                 <label class="span-2">入群审核政策<textarea id="cfg-join-policy" rows="5"></textarea></label>
                 <label class="span-2">群聊风控政策<textarea id="cfg-mod-policy" rows="6"></textarea></label>
-                <label class="span-2">离线关键词规则（JSON）<textarea id="cfg-rule-keywords" class="code-input" rows="7"></textarea></label>
-              </div>
-            </section>
-            <section class="settings-section" data-settings-section="feishu">
-              <div class="section-title"><p class="eyebrow">Feishu CLI</p><h2>飞书接入</h2></div>
-              <div class="form-grid">
-                <label class="switch-field"><span><strong>启用飞书</strong><small>公告归档与文档搜索</small></span><input id="cfg-feishu-enabled" type="checkbox"></label>
-                <label>可执行文件<input id="cfg-feishu-bin" placeholder="feishu"></label>
-                <label>超时（秒）<input id="cfg-feishu-timeout" type="number"></label>
-                <label>最大搜索结果<input id="cfg-feishu-results" type="number" min="1" max="20"></label>
-                <label class="switch-field"><span><strong>公告 JSON 走 stdin</strong><small>避免超长命令行</small></span><input id="cfg-feishu-stdin" type="checkbox"></label>
-                <label class="span-2">管理员搜索前缀<textarea id="cfg-search-prefixes" rows="2"></textarea></label>
-                <label class="span-2">命令模板（JSON）<textarea id="cfg-command-templates" class="code-input" rows="13"></textarea></label>
-                <label class="span-2">额外环境变量（JSON）<textarea id="cfg-feishu-env" class="code-input" rows="6" placeholder='{"TOKEN":"..."}'></textarea></label>
+                <label class="span-2">离线关键词规则（JSON）<textarea id="cfg-rule-keywords" class="code-input" rows="8"></textarea></label>
               </div>
             </section>
             <section class="settings-section" data-settings-section="retention">
@@ -223,8 +174,18 @@
                 <label class="switch-field span-2"><span><strong>启用每日清理</strong><small>公告版本不会自动删除</small></span><input id="cfg-retention-enabled" type="checkbox"></label>
                 <label>群消息（天）<input id="cfg-message-days" type="number"></label>
                 <label>入群申请（天）<input id="cfg-join-days" type="number"></label>
-                <label>风控运行（天）<input id="cfg-mod-days" type="number"></label>
+                <label>分析报告（天）<input id="cfg-mod-days" type="number"></label>
                 <label>审计日志（天）<input id="cfg-audit-days" type="number"></label>
+              </div>
+            </section>
+            <section class="settings-section" data-settings-section="system">
+              <div class="section-title"><p class="eyebrow">System</p><h2>系统与安全</h2></div>
+              <div class="form-grid">
+                <label>环境名称<input id="cfg-environment"></label>
+                <label>日志级别<select id="cfg-log-level"><option>DEBUG</option><option>INFO</option><option>WARNING</option><option>ERROR</option></select></label>
+                <label class="switch-field"><span><strong>安全演练</strong><small>禁止真实 QQ 出站动作</small></span><input id="cfg-dry-run" type="checkbox"></label>
+                <label class="switch-field"><span><strong>Secure Cookie</strong><small>HTTPS 后开启</small></span><input id="cfg-secure-cookie" type="checkbox"></label>
+                <label class="span-2">管理 API Token<input id="cfg-admin-token" type="password" placeholder="留空保持原值"></label>
               </div>
             </section>
             <div class="settings-actions"><span id="settings-state" class="muted">修改将写入配置并热加载。</span><button type="submit" class="button primary">保存并应用</button></div>
@@ -234,7 +195,7 @@
 
       <section id="view-records" class="view">
         <article class="panel">
-          <div class="panel-heading records-heading"><div><p class="eyebrow">Audit trail</p><h2>记录与审计</h2></div><div class="button-row"><select id="record-kind"><option value="joins">入群申请</option><option value="moderation">风控运行</option><option value="announcements">公告归档</option><option value="audit">审计日志</option></select><button id="records-refresh" class="button secondary">刷新</button></div></div>
+          <div class="panel-heading records-heading"><div><p class="eyebrow">Audit trail</p><h2>记录与审计</h2></div><div class="button-row"><select id="record-kind"><option value="joins">入群申请</option><option value="messages">群聊消息</option><option value="moderation">消息分析</option><option value="announcements">公告库</option><option value="audit">审计日志</option></select><button id="records-refresh" class="button secondary" type="button">刷新</button></div></div>
           <div id="records-table" class="records-table"></div>
         </article>
       </section>

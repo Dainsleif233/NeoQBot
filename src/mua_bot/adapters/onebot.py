@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 
-from ..config import QQConfig
+from ..config import QQBotConfig, QQConfig
 from ..models import Announcement, JoinRequest
 
 
@@ -51,7 +51,7 @@ def _timestamp(value: object) -> datetime | None:
 
 
 class OneBotClient:
-    def __init__(self, config: QQConfig, dry_run: bool = False):
+    def __init__(self, config: QQConfig | QQBotConfig, dry_run: bool = False):
         self.config = config
         self.dry_run = dry_run
         headers: dict[str, str] = {}
@@ -137,6 +137,7 @@ class OneBotClient:
                 identifier = hashlib.sha256(f"{title}\n{content}".encode()).hexdigest()[:24]
             announcements.append(
                 Announcement(
+                    bot_id=getattr(self.config, "id", "default"),
                     announcement_id=str(identifier),
                     group_id=group_id,
                     title=title,

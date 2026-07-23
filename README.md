@@ -13,6 +13,11 @@ OpenAI-compatible 模型进行结构化审核。
 - SQLite 审计记录、健康检查、管理 API、CLI、AstrBot 控制插件；
 - 默认 30 天消息保留策略与每日自动清理（公告版本不自动删除）；
 - 内置中文管理 GUI：平台登录、配置热加载、任务执行与审计浏览；
+- GUI 默认采用纯黑单色界面，可一键切换纯白主题，站点图标统一使用 `muaball.png`；
+- 多 Bot 编排：可同时配置多个 QQ / 飞书账号，并让不同 QQ Bot 独立承担入群管理、
+  消息检测和公告同步事务；
+- 入群事务支持“只检测登记”与“执行管理”分离；消息事务支持长期检测、轮询检测、
+  分析报告和管理员通知分离；公告事务支持一键全量同步与自动同步；
 - Windows 开发支持、Linux Dockerfile 和 docker-compose。
 
 首次启动默认 `dry_run: true`、`auto_approve: false`、`auto_reject: false`。在真实群验证前，
@@ -118,6 +123,27 @@ $env:MUA_QQ__MANAGED_GROUP_IDS = '["123456789"]'
 
 推荐让真人 QQ 客户端侧车（例如 NapCatQQ）只负责登录和 OneBot 协议，MUA-Bot 不保存 QQ
 密码。
+
+### 多 Bot 与事务分工
+
+GUI 的“Bot 编排 / Bot 与事务”页面可以添加多个 QQ Bot 和飞书 Bot。每个 QQ Bot 使用独立的
+`onebot_base_url`、Token、Webhook Secret、托管群与管理员列表；反向 Webhook 地址为：
+
+```text
+http://mua-bot:8080/webhooks/onebot/<bot-id>
+```
+
+旧的 `/webhooks/onebot` 地址仍指向第一个 Bot，原有单账号配置也会自动映射为 `default` Bot。
+保存新版 GUI 配置后，账号会写入 `qq.bots` / `feishu.bots`。
+
+QQ Bot 下的事务依赖如下：
+
+- 入群管理：只开“检测入群消息”时仅写入 GUI/SQLite；“执行入群管理”会自动打开检测，
+  再按置信度和自动同意/拒绝设置执行或转人工。
+- 消息检测：“长期检测”负责消息到达即登记；“轮询检测”按间隔处理最近窗口；“分析”会
+  自动开启轮询并生成报告；“处理”会自动开启轮询和分析，并在命中风险时通知管理员。
+- 公告同步：“一键同步”会抓取所管群的全部公告并写入公告库；“自动同步”按配置间隔持续
+  抓取新版本。公告事务可指定负责归档的飞书 Bot ID。
 
 在 OneBot 端完成以下设置：
 
