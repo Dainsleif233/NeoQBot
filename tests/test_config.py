@@ -108,3 +108,25 @@ def test_legacy_single_bot_config_remains_effective() -> None:
     assert bot.id == "default"
     assert bot.managed_group_ids == ["g1"]
     assert bot.tasks.message_detection.enabled is False
+
+
+def test_record_only_enables_message_task_without_analysis() -> None:
+    settings = Settings.model_validate(
+        {
+            "qq": {
+                "bots": [
+                    {
+                        "id": "recorder",
+                        "managed_group_ids": ["123"],
+                        "tasks": {"message_detection": {"record_only": True}},
+                    }
+                ]
+            }
+        }
+    )
+
+    task = settings.qq_bot("recorder").tasks.message_detection
+    assert task.enabled is True
+    assert task.record_only is True
+    assert task.polling_detection is False
+    assert task.analyze is False

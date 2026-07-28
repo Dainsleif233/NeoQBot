@@ -124,30 +124,54 @@
         <div id="qq-integrations" class="integration-grid"></div>
         <div class="section-heading"><div><p class="eyebrow">Feishu CLI</p><h2>飞书 Bot</h2></div></div>
         <div id="feishu-integrations" class="integration-grid"></div>
-        <article id="qq-frame-panel" class="panel hidden">
-          <div class="panel-heading"><div><p class="eyebrow">NapCat WebUI</p><h2 id="qq-frame-title">QQ 登录</h2></div><button id="qq-frame-close" class="button ghost" type="button">关闭</button></div>
-          <iframe id="qq-frame" class="login-frame" title="NapCat 登录"></iframe>
-        </article>
+        <dialog id="qq-login-dialog" class="login-dialog">
+          <div class="login-dialog-layout">
+            <aside class="login-guide">
+              <div><p class="eyebrow">QQ QR Login</p><h2 id="qq-frame-title">QQ 扫码登录</h2></div>
+              <ol>
+                <li>打开手机 QQ，点击右上角“+”。</li>
+                <li>选择“扫一扫”，扫描右侧二维码。</li>
+                <li>在手机上确认登录，页面会自动刷新状态。</li>
+              </ol>
+              <div id="qq-login-state" class="login-state">正在连接 NapCat…</div>
+              <p class="fine-print">二维码由对应 NapCat 实例生成，MUA-Bot 不接触或保存 QQ 密码。</p>
+              <div class="button-row"><button id="qq-login-new-window" class="button secondary" type="button">新窗口打开</button><button id="qq-frame-close" class="button ghost" type="button">关闭</button></div>
+            </aside>
+            <iframe id="qq-frame" class="login-frame" title="NapCat QQ 扫码登录"></iframe>
+          </div>
+        </dialog>
       </section>
 
       <section id="view-settings" class="view">
         <form id="settings-form" class="settings-layout">
-          <aside class="settings-nav">
-            <button type="button" class="settings-tab active" data-section="bots">Bot 与事务</button>
-            <button type="button" class="settings-tab" data-section="llm">大模型</button>
-            <button type="button" class="settings-tab" data-section="policy">策略</button>
-            <button type="button" class="settings-tab" data-section="retention">数据保留</button>
-            <button type="button" class="settings-tab" data-section="system">系统</button>
+          <aside class="settings-progress" aria-label="设置进度">
+            <div class="progress-intro"><p class="eyebrow">Configuration</p><strong>分步完成设置</strong><small>每一步只处理一类信息，最后统一保存。</small></div>
+            <nav>
+              <button type="button" class="settings-step active" data-section="qq"><span>01</span><div><strong>QQ 账号</strong><small>连接与登录入口</small></div></button>
+              <button type="button" class="settings-step" data-section="tasks"><span>02</span><div><strong>QQ 事务</strong><small>记录、分析与公告</small></div></button>
+              <button type="button" class="settings-step" data-section="feishu"><span>03</span><div><strong>飞书账号</strong><small>归档与搜索</small></div></button>
+              <button type="button" class="settings-step" data-section="llm"><span>04</span><div><strong>大模型</strong><small>模型连接参数</small></div></button>
+              <button type="button" class="settings-step" data-section="policy"><span>05</span><div><strong>判断策略</strong><small>规则与政策文本</small></div></button>
+              <button type="button" class="settings-step" data-section="storage"><span>06</span><div><strong>存储保留</strong><small>本地记录与清理</small></div></button>
+              <button type="button" class="settings-step" data-section="system"><span>07</span><div><strong>系统安全</strong><small>环境与访问控制</small></div></button>
+              <button type="button" class="settings-step" data-section="review"><span>08</span><div><strong>检查应用</strong><small>确认并保存</small></div></button>
+            </nav>
           </aside>
-          <div class="settings-content">
-            <section class="settings-section active" data-settings-section="bots">
-              <div class="section-title split-title"><div><p class="eyebrow">Orchestration</p><h2>QQ Bot 与事务</h2><p class="muted">打开事务后才会展开详细设置。执行类开关会自动补齐依赖。</p></div><button id="add-qq-bot" class="button secondary" type="button">添加 QQ Bot</button></div>
+          <div class="settings-workspace">
+            <section class="settings-section active" data-settings-section="qq">
+              <div class="section-title split-title"><div><p class="eyebrow">Step 01 · QQ accounts</p><h2>QQ 账号与连接</h2><p class="muted">这里只设置账号连接、Webhook 和托管范围；具体事务在下一步配置。</p></div><button id="add-qq-bot" class="button secondary" type="button">添加 QQ Bot</button></div>
               <div id="qq-bot-editor" class="bot-editor-list"></div>
-              <div class="section-title split-title sub-section-title"><div><p class="eyebrow">Archive targets</p><h2>飞书 Bot</h2></div><button id="add-feishu-bot" class="button secondary" type="button">添加飞书 Bot</button></div>
+            </section>
+            <section class="settings-section" data-settings-section="tasks">
+              <div class="section-title"><p class="eyebrow">Step 02 · QQ workflows</p><h2>QQ 事务分工</h2><p class="muted">每个账号分别选择只记录、分析、处理或公告同步。依赖项会自动补齐。</p></div>
+              <div id="qq-task-editor" class="bot-editor-list"></div>
+            </section>
+            <section class="settings-section" data-settings-section="feishu">
+              <div class="section-title split-title"><div><p class="eyebrow">Step 03 · Feishu accounts</p><h2>飞书账号</h2><p class="muted">为公告归档和管理员搜索准备独立 CLI 登录态。</p></div><button id="add-feishu-bot" class="button secondary" type="button">添加飞书 Bot</button></div>
               <div id="feishu-bot-editor" class="bot-editor-list"></div>
             </section>
             <section class="settings-section" data-settings-section="llm">
-              <div class="section-title"><p class="eyebrow">Agnes AI</p><h2>大模型</h2></div>
+              <div class="section-title"><p class="eyebrow">Step 04 · Agnes AI</p><h2>大模型连接</h2><p class="muted">只负责结构化判断；纯记录模式无需配置模型。</p></div>
               <div class="form-grid">
                 <label>驱动<select id="cfg-llm-driver"><option value="rules">离线规则</option><option value="openai_compatible">OpenAI 兼容</option></select></label>
                 <label>模型名称<input id="cfg-llm-model"></label>
@@ -159,7 +183,7 @@
               </div>
             </section>
             <section class="settings-section" data-settings-section="policy">
-              <div class="section-title"><p class="eyebrow">Shared policy</p><h2>共享判断策略</h2><p class="muted">账号级开关与阈值在“Bot 与事务”中设置；这里维护所有 Bot 共用的判断文本与离线规则。</p></div>
+              <div class="section-title"><p class="eyebrow">Step 05 · Shared policy</p><h2>共享判断策略</h2><p class="muted">这里维护所有 Bot 共用的判断文本与离线规则。</p></div>
               <div class="form-grid">
                 <label class="span-2">入群必要关键词<textarea id="cfg-required-keywords" rows="2"></textarea></label>
                 <label class="span-2">入群禁止关键词<textarea id="cfg-forbidden-keywords" rows="2"></textarea></label>
@@ -168,9 +192,10 @@
                 <label class="span-2">离线关键词规则（JSON）<textarea id="cfg-rule-keywords" class="code-input" rows="8"></textarea></label>
               </div>
             </section>
-            <section class="settings-section" data-settings-section="retention">
-              <div class="section-title"><p class="eyebrow">Retention</p><h2>数据保留</h2></div>
+            <section class="settings-section" data-settings-section="storage">
+              <div class="section-title"><p class="eyebrow">Step 06 · Storage</p><h2>本地记录与数据保留</h2><p class="muted">SQLite 用于管理后台查询；开启“纯记录”后，原始消息还会按日写入挂载卷中的 JSONL。</p></div>
               <div class="form-grid">
+                <label class="span-2">群消息归档目录<input id="cfg-message-archive-path" placeholder="data/group-message-records"><small>Docker 默认映射到 /app/data/group-message-records</small></label>
                 <label class="switch-field span-2"><span><strong>启用每日清理</strong><small>公告版本不会自动删除</small></span><input id="cfg-retention-enabled" type="checkbox"></label>
                 <label>群消息（天）<input id="cfg-message-days" type="number"></label>
                 <label>入群申请（天）<input id="cfg-join-days" type="number"></label>
@@ -179,7 +204,7 @@
               </div>
             </section>
             <section class="settings-section" data-settings-section="system">
-              <div class="section-title"><p class="eyebrow">System</p><h2>系统与安全</h2></div>
+              <div class="section-title"><p class="eyebrow">Step 07 · System</p><h2>系统与安全</h2></div>
               <div class="form-grid">
                 <label>环境名称<input id="cfg-environment"></label>
                 <label>日志级别<select id="cfg-log-level"><option>DEBUG</option><option>INFO</option><option>WARNING</option><option>ERROR</option></select></label>
@@ -188,7 +213,12 @@
                 <label class="span-2">管理 API Token<input id="cfg-admin-token" type="password" placeholder="留空保持原值"></label>
               </div>
             </section>
-            <div class="settings-actions"><span id="settings-state" class="muted">修改将写入配置并热加载。</span><button type="submit" class="button primary">保存并应用</button></div>
+            <section class="settings-section" data-settings-section="review">
+              <div class="section-title"><p class="eyebrow">Step 08 · Review</p><h2>检查并应用</h2><p class="muted">保存后配置会立即校验并热加载；监听地址或端口变更仍需重启。</p></div>
+              <div id="settings-review" class="review-grid"></div>
+              <div class="review-notice"><strong>应用前检查</strong><span>建议首次联调保持“安全演练”开启，并确认 QQ 登录状态与挂载卷权限。</span></div>
+            </section>
+            <div class="settings-actions"><span id="settings-state" class="muted">修改尚未保存。</span><div class="button-row"><button id="settings-prev" type="button" class="button ghost">上一步</button><button id="settings-next" type="button" class="button secondary">下一步</button><button type="submit" class="button primary">保存并应用</button></div></div>
           </div>
         </form>
       </section>

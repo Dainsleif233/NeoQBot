@@ -12,6 +12,7 @@ from .models import (
     ModerationResult,
 )
 from .ports import DecisionEngine, FeishuGateway, QQGateway
+from .recording import LocalMessageRecorder
 
 logger = logging.getLogger(__name__)
 
@@ -139,22 +140,39 @@ class ModerationService:
         engine: DecisionEngine,
         qq: QQGateway,
         bot: QQBotConfig | None = None,
+        recorder: LocalMessageRecorder | None = None,
     ) -> None:
         self.settings = settings
         self.database = database
         self.engine = engine
         self.qq = qq
+        self.recorder = recorder
         self.bot = bot or settings.qq_bot()
         if self.bot is None:
             raise ValueError("No QQ Bot is configured")
 
     def capture(self, message: GroupMessage) -> bool:
         task = self.bot.tasks.message_detection
-        if not task.enabled or not (task.realtime_detection or task.polling_detection):
+        if not task.enabled or not (
+            task.record_only or task.realtime_detection or task.polling_detection
+        ):
             return False
         if message.group_id not in self.bot.managed_group_ids:
             return False
-        return self.database.save_message(message)
+        saved = self.database.save_message(message)
+        if saved and task.record_only and self.recorder is not None:
+            try:
+                self.recorder.append(message)
+            except OSError as exc:
+                logger.exception("Failed to append local group message archive")
+                self.database.audit(
+                    "message_archive",
+                    "failed",
+                    "group_message",
+                    message.message_id,
+                    {"bot_id": message.bot_id, "group_id": message.group_id, "error": str(exc)},
+                )
+        return saved
 
     async def run_group(self, group_id: str, window_end: datetime | None = None) -> str:
         task = self.bot.tasks.message_detection

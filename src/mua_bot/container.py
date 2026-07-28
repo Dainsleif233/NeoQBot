@@ -10,6 +10,7 @@ from .config import Settings
 from .database import Database
 from .events import EventHandler
 from .ports import DecisionEngine, FeishuGateway
+from .recording import LocalMessageRecorder
 from .runtime import Runtime
 from .services import AnnouncementService, JoinApprovalService, ModerationService, SearchService
 
@@ -25,6 +26,7 @@ class Container:
     feishu_clients: dict[str, FeishuGateway]
     runtime: Runtime
     auth: GuiAuth
+    message_recorder: LocalMessageRecorder
 
     async def close(self) -> None:
         await self.runtime.stop()
@@ -38,6 +40,7 @@ class Container:
 def build_container(settings: Settings) -> Container:
     database = Database(settings.app.database_path)
     database.initialize()
+    message_recorder = LocalMessageRecorder(settings.app.message_archive_path)
     auth = GuiAuth(database, settings.gui)
     auth.ensure_bootstrap_admin()
     qq_bots = settings.effective_qq_bots()
@@ -74,7 +77,9 @@ def build_container(settings: Settings) -> Container:
         search_feishu = settings.feishu_bot(search_feishu_id) or target_feishu
         search_gateway = feishu_clients.get(search_feishu.id, target_gateway)
         join_services[bot.id] = JoinApprovalService(settings, database, engine, client, bot)
-        moderation_services[bot.id] = ModerationService(settings, database, engine, client, bot)
+        moderation_services[bot.id] = ModerationService(
+            settings, database, engine, client, bot, message_recorder
+        )
         announcement_services[bot.id] = AnnouncementService(
             settings, database, client, target_gateway, bot, target_feishu
         )
@@ -88,6 +93,7 @@ def build_container(settings: Settings) -> Container:
         event_handler,
         moderation_services,
         announcement_services,
+        message_recorder,
     )
     return Container(
         settings,
@@ -99,4 +105,5 @@ def build_container(settings: Settings) -> Container:
         feishu_clients,
         runtime,
         auth,
+        message_recorder,
     )

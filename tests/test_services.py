@@ -11,6 +11,7 @@ from mua_bot.models import (
     ModerationFinding,
     ModerationResult,
 )
+from mua_bot.recording import LocalMessageRecorder
 from mua_bot.services import AnnouncementService, JoinApprovalService, ModerationService
 
 
@@ -200,6 +201,44 @@ async def test_moderation_reports_alert_delivery_failure(tmp_path: Path) -> None
     )
 
     assert await service.run_group("g1", end) == "alert_failed"
+
+
+def test_record_only_message_is_saved_to_database_and_local_volume(tmp_path: Path) -> None:
+    values = settings_for(tmp_path).model_dump()
+    values["app"]["message_archive_path"] = str(tmp_path / "group-records")
+    values["qq"]["bots"] = [
+        {
+            "id": "recorder",
+            "managed_group_ids": ["g1"],
+            "tasks": {"message_detection": {"record_only": True}},
+        }
+    ]
+    settings = Settings.model_validate(values)
+    database = Database(settings.app.database_path)
+    database.initialize()
+    service = ModerationService(
+        settings,
+        database,
+        FakeEngine(),
+        FakeQQ(),
+        settings.qq_bot("recorder"),
+        LocalMessageRecorder(settings.app.message_archive_path),
+    )
+
+    captured = service.capture(
+        GroupMessage(
+            bot_id="recorder",
+            message_id="record-1",
+            group_id="g1",
+            user_id="u1",
+            text="archive me",
+            sent_at=datetime(2026, 7, 28, tzinfo=UTC),
+        )
+    )
+
+    assert captured is True
+    assert database.counts()["group_messages"] == 1
+    assert (tmp_path / "group-records" / "recorder" / "g1" / "2026-07-28.jsonl").exists()
 
 
 async def test_pending_feishu_sync_retries_when_qq_fetch_fails(tmp_path: Path) -> None:

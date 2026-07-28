@@ -18,6 +18,7 @@ class AppConfig(BaseModel):
     timezone: str = "Asia/Shanghai"
     log_level: str = "INFO"
     database_path: str = "data/mua-bot.db"
+    message_archive_path: str = "data/group-message-records"
     admin_api_token: str = ""
     dry_run: bool = True
 
@@ -65,6 +66,7 @@ class QQJoinTaskConfig(BaseModel):
 
 class QQMessageTaskConfig(BaseModel):
     enabled: bool = False
+    record_only: bool = False
     realtime_detection: bool = False
     polling_detection: bool = False
     analyze: bool = False
@@ -83,7 +85,7 @@ class QQMessageTaskConfig(BaseModel):
         if self.analyze:
             self.enabled = True
             self.polling_detection = True
-        if self.realtime_detection or self.polling_detection:
+        if self.record_only or self.realtime_detection or self.polling_detection:
             self.enabled = True
         return self
 

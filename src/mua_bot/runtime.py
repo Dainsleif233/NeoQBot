@@ -9,6 +9,7 @@ from typing import Any
 from .config import Settings
 from .database import Database
 from .events import EventHandler
+from .recording import LocalMessageRecorder
 from .services import AnnouncementService, ModerationService
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,7 @@ class Runtime:
         event_handler: EventHandler,
         moderation: ModerationService | dict[str, ModerationService],
         announcements: AnnouncementService | dict[str, AnnouncementService],
+        message_recorder: LocalMessageRecorder | None = None,
     ) -> None:
         self.settings = settings
         self.database = database
@@ -30,6 +32,7 @@ class Runtime:
         self.announcements = (
             announcements if isinstance(announcements, dict) else {"default": announcements}
         )
+        self.message_recorder = message_recorder
         self.queue: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue(maxsize=5000)
         self._tasks: list[asyncio.Task[None]] = []
         self._stopping = asyncio.Event()
@@ -152,6 +155,10 @@ class Runtime:
             moderation_before=now - timedelta(days=self.settings.retention.moderation_run_days),
             audit_before=now - timedelta(days=self.settings.retention.audit_days),
         )
+        if self.message_recorder is not None:
+            result["message_archive_files"] = self.message_recorder.prune(
+                now - timedelta(days=self.settings.retention.message_days)
+            )
         logger.info("Retention maintenance completed: %s", result)
         return result
 

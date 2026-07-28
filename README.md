@@ -7,16 +7,17 @@ OpenAI-compatible 模型进行结构化审核。
 当前仓库已经包含可运行的首版核心，而不是只有设计稿：
 
 - QQ 入群申请接收、幂等落库、模型审核、可控自动同意和人工复核通知；
-- QQ 群消息持续采集，每 30 分钟分析此前 5 分钟窗口，命中风险时私聊管理员；
+- QQ 群消息可选择纯记录或持续分析；纯记录不调用模型，并按日写入本地 JSONL 挂载卷；
+- 分析模式默认每 30 分钟处理此前 5 分钟窗口，命中风险时私聊管理员；
 - QQ 群公告全量获取、本地版本化归档、失败重试和飞书同步；
 - 管理员 QQ 私聊 `搜索 关键词`，调用飞书 CLI 检索并将结果回复 QQ；
 - SQLite 审计记录、健康检查、管理 API、CLI、AstrBot 控制插件；
 - 默认 30 天消息保留策略与每日自动清理（公告版本不自动删除）；
-- 内置中文管理 GUI：平台登录、配置热加载、任务执行与审计浏览；
+- 内置中文管理 GUI：QQ 二维码扫码登录、分步设置向导、配置热加载、任务执行与审计浏览；
 - GUI 默认采用纯黑单色界面，可一键切换纯白主题，站点图标统一使用 `muaball.png`；
 - 多 Bot 编排：可同时配置多个 QQ / 飞书账号，并让不同 QQ Bot 独立承担入群管理、
   消息检测和公告同步事务；
-- 入群事务支持“只检测登记”与“执行管理”分离；消息事务支持长期检测、轮询检测、
+- 入群事务支持“只检测登记”与“执行管理”分离；消息事务支持纯记录、长期检测、轮询检测、
   分析报告和管理员通知分离；公告事务支持一键全量同步与自动同步；
 - Windows 开发支持、Linux Dockerfile 和 docker-compose。
 
@@ -155,7 +156,8 @@ QQ Bot 下的事务依赖如下：
 5. 公告属于扩展 API。MUA-Bot 会依次尝试 `qq.announcement_actions` 中的动作名，请按所用
    OneBot 实现的当前文档调整。
 
-Docker 部署时可直接在 GUI 的“平台登录”页面打开 NapCat WebUI，通过 6099 端口扫码登录。
+Docker 部署时可直接在 GUI 的“Bot 编排”页面点击“扫码登录”，在弹出的 NapCat 登录窗口中
+扫描二维码；页面会轮询 OneBot 登录状态。也可以通过 6099 端口在新窗口完成登录。
 如果 NapCat 禁止 iframe 嵌入，点击“新窗口打开”即可。
 
 先保持 `app.dry_run: true`，执行：
@@ -341,6 +343,9 @@ SQLite 在容器内位于 `/app/data/mua-bot.db`，Docker 宿主机对应
 `/var/lib/docker/volumes/mua-bot-data/_data/mua-bot.db`。备份时同时保留主文件以及可能存在的
 `-wal`、`-shm` 文件，或在停止服务后复制。生产环境建议定期快照整个
 `/var/lib/docker/volumes/mua-bot-data/_data` 目录。
+开启 QQ Bot 的“纯记录群消息”后，原始事件还会按
+`/app/data/group-message-records/<bot-id>/<group-id>/YYYY-MM-DD.jsonl` 写入同一个持久化卷；
+每日维护会按 `retention.message_days` 同步清理过期的 SQLite 消息和 JSONL 日文件。
 `retention` 配置会每日删除过期消息、申请、风控运行和审计日志；公告版本永久保留，除非
 管理员另行制定归档删除流程。
 

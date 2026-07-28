@@ -5,6 +5,8 @@ app:
   timezone: Asia/Shanghai
   log_level: INFO
   database_path: data/mua-bot.db
+  # 纯记录群消息按 Bot/群号/日期写入 JSONL；Docker 中位于持久化数据卷。
+  message_archive_path: data/group-message-records
   # 生产环境请通过 MUA_APP__ADMIN_API_TOKEN 注入随机长令牌。
   admin_api_token: ""
   # 首次联调务必保持 true；确认收发链路后再关闭。
@@ -53,6 +55,7 @@ qq:
   #         minimum_confidence: 0.88
   #       message_detection:
   #         enabled: false
+  #         record_only: false
   #       announcement_sync:
   #         enabled: false
 
