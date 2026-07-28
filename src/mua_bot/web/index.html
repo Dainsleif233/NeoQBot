@@ -127,7 +127,7 @@
         <dialog id="qq-login-dialog" class="login-dialog">
           <div class="login-dialog-layout">
             <aside class="login-guide">
-              <div><p class="eyebrow">QQ QR Login</p><h2 id="qq-frame-title">QQ 扫码登录</h2></div>
+              <div><p class="eyebrow">QQ QR Login</p><h2 id="qq-login-title">QQ 扫码登录</h2></div>
               <ol>
                 <li>打开手机 QQ，点击右上角“+”。</li>
                 <li>选择“扫一扫”，扫描右侧二维码。</li>
@@ -135,9 +135,15 @@
               </ol>
               <div id="qq-login-state" class="login-state">正在连接 NapCat…</div>
               <p class="fine-print">二维码由对应 NapCat 实例生成，MUA-Bot 不接触或保存 QQ 密码。</p>
-              <div class="button-row"><button id="qq-login-new-window" class="button secondary" type="button">新窗口打开</button><button id="qq-frame-close" class="button ghost" type="button">关闭</button></div>
+              <div class="button-row"><button id="qq-qrcode-refresh" class="button secondary" type="button">刷新二维码</button><button id="qq-login-new-window" class="button ghost" type="button">NapCat 设置</button><button id="qq-login-close" class="button ghost" type="button">关闭</button></div>
             </aside>
-            <iframe id="qq-frame" class="login-frame" title="NapCat QQ 扫码登录"></iframe>
+            <section id="qq-qr-stage" class="qr-stage">
+              <div class="qr-image-shell">
+                <img id="qq-qrcode" alt="QQ 登录二维码">
+                <div id="qq-qr-placeholder" class="qr-placeholder"><span class="qr-spinner"></span><strong>等待 NapCat 生成二维码</strong><small>通常在容器启动后的几秒内出现</small></div>
+              </div>
+              <p id="qq-qr-caption">二维码会自动刷新，请使用手机 QQ 扫描。</p>
+            </section>
           </div>
         </dialog>
       </section>

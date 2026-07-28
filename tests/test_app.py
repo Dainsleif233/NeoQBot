@@ -142,3 +142,34 @@ def test_gui_saves_and_hot_reloads_settings(tmp_path: Path, monkeypatch) -> None
         assert saved.status_code == 200
         assert client.get("/api/gui/dashboard").json()["environment"] == "gui-test"
         assert config_path.exists()
+
+
+def test_gui_serves_napcat_qrcode_only_to_authenticated_admin(tmp_path: Path) -> None:
+    qrcode = tmp_path / "qrcode.png"
+    qrcode.write_bytes(b"\x89PNG\r\n\x1a\npreview")
+    settings = app_settings(tmp_path)
+    values = settings.model_dump()
+    values["qq"]["qrcode_path"] = str(qrcode)
+
+    with TestClient(create_app(Settings.model_validate(values))) as client:
+        endpoint = "/api/gui/integrations/qq/qrcode"
+        assert client.get(endpoint).status_code == 401
+        login = client.post(
+            "/api/gui/auth/login",
+            json={"username": "admin", "password": "muaadmin"},
+        ).json()
+        client.post(
+            "/api/gui/auth/password",
+            headers={"X-CSRF-Token": login["csrf_token"]},
+            json={
+                "current_password": "muaadmin",
+                "new_password": "a-new-secure-password",
+            },
+        )
+
+        response = client.get(endpoint)
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/png"
+    assert response.headers["cache-control"] == "no-store, max-age=0"
+    assert response.content.startswith(b"\x89PNG\r\n\x1a\n")

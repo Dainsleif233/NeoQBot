@@ -23,6 +23,8 @@ qq:
   # 留空时 GUI 自动使用当前浏览器主机名和 webui_public_port。
   webui_public_url: ""
   webui_public_port: 6099
+  # NapCat 二维码缓存的只读挂载路径；GUI 通过受保护接口直接显示该图片。
+  qrcode_path: /app/napcat-cache/qrcode.png
   managed_group_ids:
     - "123456789"
   administrator_qq_ids:
@@ -42,6 +44,7 @@ qq:
   #     access_token: ""
   #     webhook_secret: ""
   #     webui_public_port: 6100
+  #     qrcode_path: /app/napcat-cache/qq-join/qrcode.png
   #     managed_group_ids: ["123456789"]
   #     administrator_qq_ids: ["10001"]
   #     announcement_actions: [get_group_notice, _get_group_notice]

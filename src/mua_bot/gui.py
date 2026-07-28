@@ -333,6 +333,37 @@ def register_gui(
             raise HTTPException(status_code=404, detail="未知任务")
         return {"ok": True, "result": result}
 
+    def qq_qrcode_path(bot_id: str | None) -> Path:
+        bot = get_settings().qq_bot(bot_id)
+        if bot is None:
+            raise HTTPException(status_code=404, detail="未知 QQ Bot")
+        path = Path(bot.qrcode_path)
+        try:
+            if not path.is_file():
+                raise HTTPException(status_code=404, detail="NapCat 尚未生成登录二维码")
+            if path.stat().st_size > 5 * 1024 * 1024:
+                raise HTTPException(status_code=422, detail="NapCat 二维码文件异常")
+            with path.open("rb") as handle:
+                if handle.read(8) != b"\x89PNG\r\n\x1a\n":
+                    raise HTTPException(status_code=422, detail="NapCat 二维码不是有效 PNG")
+        except HTTPException:
+            raise
+        except OSError as exc:
+            raise HTTPException(status_code=404, detail=f"无法读取 NapCat 二维码：{exc}") from exc
+        return path
+
+    @app.get("/api/gui/integrations/qq/qrcode")
+    async def gui_qq_qrcode(
+        _: GuiSession = Depends(ready_admin),
+        bot_id: str | None = Query(default=None),
+    ) -> FileResponse:
+        path = await asyncio.to_thread(qq_qrcode_path, bot_id)
+        return FileResponse(
+            path,
+            media_type="image/png",
+            headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"},
+        )
+
     @app.get("/api/gui/integrations/qq")
     async def gui_qq_status(
         _: GuiSession = Depends(ready_admin),
@@ -362,6 +393,7 @@ def register_gui(
                     "webhook_url": f"/webhooks/onebot/{bot.id}",
                     "webui_public_url": bot.webui_public_url,
                     "webui_public_port": bot.webui_public_port,
+                    "qrcode_available": Path(bot.qrcode_path).is_file(),
                     "tasks": bot.tasks.model_dump(mode="json"),
                 }
             )

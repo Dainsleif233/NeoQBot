@@ -9,6 +9,8 @@
     qqUrls: {},
     qqLoginBotId: "",
     qqLoginTimer: null,
+    qqLoginPolling: false,
+    qqQrLastRefresh: 0,
     settingsStep: "qq"
   };
 
@@ -317,8 +319,29 @@
     return bot.webui_public_url || (window.location.protocol + "//" + window.location.hostname + ":" + bot.webui_public_port);
   }
 
-  async function refreshQQLoginState() {
+  function refreshQQCode() {
     if (!state.qqLoginBotId) return;
+    var image = $("qq-qrcode");
+    var placeholder = $("qq-qr-placeholder");
+    placeholder.classList.remove("hidden");
+    $("qq-qr-caption").textContent = "正在读取 NapCat 生成的二维码…";
+    image.onload = function () {
+      placeholder.classList.add("hidden");
+      image.classList.add("loaded");
+      $("qq-qr-caption").textContent = "二维码会自动刷新，请使用手机 QQ 扫描。";
+    };
+    image.onerror = function () {
+      image.classList.remove("loaded");
+      placeholder.classList.remove("hidden");
+      $("qq-qr-caption").textContent = "二维码尚未生成，请确认 qq-bridge 正在运行。";
+    };
+    state.qqQrLastRefresh = Date.now();
+    image.src = "/api/gui/integrations/qq/qrcode?bot_id=" + encodeURIComponent(state.qqLoginBotId) + "&t=" + state.qqQrLastRefresh;
+  }
+
+  async function refreshQQLoginState() {
+    if (!state.qqLoginBotId || state.qqLoginPolling) return;
+    state.qqLoginPolling = true;
     try {
       var data = await api("/api/gui/integrations/qq?bot_id=" + encodeURIComponent(state.qqLoginBotId));
       var bot = (data.bots || [])[0];
@@ -326,24 +349,34 @@
         var info = bot.status.login_info || {};
         $("qq-login-state").textContent = "已登录" + (info.nickname ? " · " + info.nickname : "") + (info.user_id ? "（" + info.user_id + "）" : "");
         $("qq-login-state").classList.add("success");
+        $("qq-qr-stage").classList.add("success");
+        $("qq-qr-caption").textContent = "登录成功，可以关闭此窗口。";
       } else {
         $("qq-login-state").textContent = "等待扫码确认…";
         $("qq-login-state").classList.remove("success");
+        $("qq-qr-stage").classList.remove("success");
+        if (Date.now() - state.qqQrLastRefresh > 15000) refreshQQCode();
       }
     } catch (_) {
-      $("qq-login-state").textContent = "尚未登录或 NapCat 正在启动，请扫描右侧二维码。";
+      $("qq-login-state").textContent = "尚未登录或 NapCat 正在启动，请扫描网页中的二维码。";
       $("qq-login-state").classList.remove("success");
+      $("qq-qr-stage").classList.remove("success");
+      if (Date.now() - state.qqQrLastRefresh > 15000) refreshQQCode();
+    } finally {
+      state.qqLoginPolling = false;
     }
   }
 
   function openQQLogin(bot) {
     state.qqLoginBotId = bot.id;
     state.qqUrls[bot.id] = qqPublicUrl(bot);
-    $("qq-frame").src = state.qqUrls[bot.id];
-    $("qq-frame-title").textContent = bot.name + " · 扫码登录";
+    $("qq-login-title").textContent = bot.name + " · 扫码登录";
     $("qq-login-state").textContent = "正在连接 NapCat…";
     $("qq-login-state").classList.remove("success");
+    $("qq-qr-stage").classList.remove("success");
+    state.qqQrLastRefresh = 0;
     $("qq-login-dialog").showModal();
+    refreshQQCode();
     refreshQQLoginState();
     window.clearInterval(state.qqLoginTimer);
     state.qqLoginTimer = window.setInterval(refreshQQLoginState, 3000);
@@ -353,7 +386,9 @@
     window.clearInterval(state.qqLoginTimer);
     state.qqLoginTimer = null;
     state.qqLoginBotId = "";
-    $("qq-frame").src = "about:blank";
+    state.qqLoginPolling = false;
+    $("qq-qrcode").removeAttribute("src");
+    $("qq-qrcode").classList.remove("loaded");
     $("qq-login-dialog").close();
   }
 
@@ -379,7 +414,7 @@
       buttons.append(
         integrationButton("刷新状态", function () { loadIntegrationStatus().catch(function (error) { showToast(error.message, true); }); }),
         integrationButton("扫码登录", function () { openQQLogin(bot); }),
-        integrationButton("新窗口", function () { window.open(state.qqUrls[bot.id], "_blank", "noopener"); })
+        integrationButton("NapCat 设置", function () { window.open(state.qqUrls[bot.id], "_blank", "noopener"); })
       );
       if (bot.tasks.message_detection.enabled && bot.tasks.message_detection.analyze) {
         buttons.append(integrationButton("立即分析", function () { runJob("moderation", bot.id, this); }));
@@ -445,7 +480,8 @@
     renderFeishuIntegrations(results[1].bots || []);
   }
 
-  $("qq-frame-close").addEventListener("click", closeQQLogin);
+  $("qq-login-close").addEventListener("click", closeQQLogin);
+  $("qq-qrcode-refresh").addEventListener("click", refreshQQCode);
   $("qq-login-new-window").addEventListener("click", function () {
     if (state.qqLoginBotId) window.open(state.qqUrls[state.qqLoginBotId], "_blank", "noopener");
   });
@@ -498,6 +534,7 @@
       webui_base_url: "http://qq-bridge:6099",
       webui_public_url: "",
       webui_public_port: 6099,
+      qrcode_path: "/app/napcat-cache/qrcode.png",
       managed_group_ids: [],
       administrator_qq_ids: [],
       announcement_actions: ["get_group_notice", "_get_group_notice"],
@@ -532,7 +569,8 @@
       var legacyQQ = defaultQQBot(0);
       legacyQQ.id = "default";
       legacyQQ.name = "默认 QQ Bot";
-      ["enabled", "onebot_base_url", "access_token", "webhook_secret", "request_timeout_seconds", "webui_base_url", "webui_public_url", "webui_public_port", "managed_group_ids", "administrator_qq_ids", "announcement_actions"].forEach(function (key) { legacyQQ[key] = clone(c.qq[key]); });
+      ["enabled", "onebot_base_url", "access_token", "webhook_secret", "request_timeout_seconds", "webui_base_url", "webui_public_url", "webui_public_port", "qrcode_path", "managed_group_ids", "administrator_qq_ids", "announcement_actions"].forEach(function (key) { legacyQQ[key] = clone(c.qq[key]); });
+      legacyQQ.qrcode_path = legacyQQ.qrcode_path || "/app/napcat-cache/qrcode.png";
       legacyQQ.tasks.join_management = {
         enabled: c.join_approval.enabled,
         detect_requests: c.join_approval.enabled,
@@ -814,6 +852,7 @@
         '<label class="span-2">管理员 QQ<textarea data-field="administrator_qq_ids" rows="2" placeholder="每行一个 QQ 号"></textarea></label>',
         '<label>NapCat 公网端口<input data-field="webui_public_port" type="number"></label>',
         '<label>NapCat 公网 URL<input data-field="webui_public_url" placeholder="留空自动按端口生成"></label>',
+        '<label class="span-2">二维码挂载路径<input data-field="qrcode_path" placeholder="/app/napcat-cache/qrcode.png"><small>Compose 默认已配置，一般无需修改</small></label>',
         '<label class="span-2">公告动作名<textarea data-field="announcement_actions" rows="2"></textarea></label>',
         '<label class="span-2">管理员搜索使用的飞书 Bot ID<input data-field="search_feishu_bot_id" placeholder="留空使用默认飞书 Bot"></label>',
         '</div><div class="connection-hint"><strong>扫码登录</strong><span>保存连接后，到“Bot 编排”点击“扫码登录”，扫描对应 NapCat 实例生成的二维码。</span></div></div>'
@@ -831,6 +870,7 @@
       setField(card, "administrator_qq_ids", listValue(bot.administrator_qq_ids));
       setField(card, "webui_public_port", bot.webui_public_port);
       setField(card, "webui_public_url", bot.webui_public_url || "");
+      setField(card, "qrcode_path", bot.qrcode_path || "/app/napcat-cache/qrcode.png");
       setField(card, "announcement_actions", listValue(bot.announcement_actions));
       setField(card, "search_feishu_bot_id", bot.search_feishu_bot_id || "");
       card.querySelector("[data-remove]").addEventListener("click", function () {
@@ -967,6 +1007,7 @@
         webui_base_url: original.webui_base_url || "http://qq-bridge:6099",
         webui_public_url: field(card, "webui_public_url").value.trim(),
         webui_public_port: numberValue(field(card, "webui_public_port").value, 6099),
+        qrcode_path: field(card, "qrcode_path").value.trim() || "/app/napcat-cache/qrcode.png",
         managed_group_ids: splitList(field(card, "managed_group_ids").value),
         administrator_qq_ids: splitList(field(card, "administrator_qq_ids").value),
         announcement_actions: splitList(field(card, "announcement_actions").value),

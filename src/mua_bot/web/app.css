@@ -153,7 +153,16 @@ input[type="checkbox"] { width: 38px; height: 20px; accent-color: var(--inverse-
 .login-state { padding: 12px; border: 1px solid var(--line); border-radius: 9px; color: var(--muted); background: var(--surface); font-size: 12px; line-height: 1.5; }
 .login-state.success { color: var(--text); border-color: var(--accent); background: var(--accent-soft); }
 .login-guide .fine-print { margin-top: auto; }
-.login-frame { width: 100%; height: 100%; min-height: 620px; background: white; border: 0; }
+.qr-stage { display: grid; place-content: center; justify-items: center; gap: 20px; padding: 36px; background: radial-gradient(circle, var(--accent-soft), transparent 54%), var(--surface); }
+.qr-image-shell { position: relative; width: min(390px, 70vw); aspect-ratio: 1; display: grid; place-items: center; overflow: hidden; border: 1px solid var(--line-strong); border-radius: 22px; background: #fff; box-shadow: 0 24px 80px rgba(0, 0, 0, .28); }
+.qr-image-shell img { display: none; width: 100%; height: 100%; padding: 18px; object-fit: contain; image-rendering: crisp-edges; }
+.qr-image-shell img.loaded { display: block; }
+.qr-placeholder { display: grid; justify-items: center; gap: 8px; padding: 30px; color: #3a4350; text-align: center; }
+.qr-placeholder small { color: #798393; }
+.qr-spinner { width: 32px; height: 32px; margin-bottom: 8px; border: 3px solid #dce2ea; border-top-color: #315fbd; border-radius: 50%; animation: qr-spin .8s linear infinite; }
+.qr-stage > p { margin: 0; color: var(--muted); font-size: 12px; text-align: center; }
+.qr-stage.success .qr-image-shell::after { content: "✓  已登录"; position: absolute; inset: 0; display: grid; place-items: center; color: #fff; background: rgba(12, 15, 20, .82); font-size: 28px; font-weight: 850; }
+@keyframes qr-spin { to { transform: rotate(360deg); } }
 
 .settings-layout { display: grid; grid-template-columns: 245px minmax(0, 1fr); align-items: start; gap: 42px; max-width: 1240px; margin: 0 auto; }
 .settings-progress { position: sticky; top: 20px; padding-right: 24px; border-right: 1px solid var(--line); }
@@ -258,7 +267,8 @@ input[type="checkbox"] { width: 38px; height: 20px; accent-color: var(--inverse-
   .login-guide { display: grid; grid-template-columns: 1fr auto; align-items: center; padding: 18px; border-right: 0; border-bottom: 1px solid var(--line); }
   .login-guide ol, .login-guide .fine-print { display: none; }
   .login-guide .button-row { grid-column: 1 / -1; }
-  .login-frame { min-height: 420px; }
+  .qr-stage { min-height: 420px; padding: 24px; }
+  .qr-image-shell { width: min(330px, 72vw); }
 }
 @media (max-width: 580px) {
   .metric-grid, .form-grid, .task-detail, .review-grid { grid-template-columns: 1fr; }

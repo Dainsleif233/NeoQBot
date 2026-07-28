@@ -10,11 +10,13 @@ services:
       - |
         chown -R 10001:10001 /mnt/mua-data /mnt/feishu-home
         chmod 700 /mnt/mua-data /mnt/feishu-home /mnt/napcat-config /mnt/qq-session
+        chmod 755 /mnt/napcat-cache
     volumes:
       - /var/lib/docker/volumes/mua-bot-data/_data:/mnt/mua-data
       - /var/lib/docker/volumes/mua-bot-feishu-home/_data:/mnt/feishu-home
       - /var/lib/docker/volumes/mua-bot-napcat-config/_data:/mnt/napcat-config
       - /var/lib/docker/volumes/mua-bot-qq-session/_data:/mnt/qq-session
+      - /var/lib/docker/volumes/mua-bot-napcat-cache/_data:/mnt/napcat-cache
 
   mua-bot:
     image: mua-bot:local
@@ -34,6 +36,8 @@ services:
       - /var/lib/docker/volumes/mua-bot-data/_data:/app/data
       # 持久化飞书 CLI 可能写入 ~/.config、~/.local 等位置的真人账号登录态。
       - /var/lib/docker/volumes/mua-bot-feishu-home/_data:/home/mua
+      # NapCat 在未登录时持续更新此二维码；后台只读并通过登录后的 GUI 提供。
+      - /var/lib/docker/volumes/mua-bot-napcat-cache/_data:/app/napcat-cache:ro
     ports:
       - "${MUA_GUI_BIND_IP:-0.0.0.0}:${MUA_GUI_PORT:-6688}:8080"
     extra_hosts:
@@ -46,12 +50,14 @@ services:
     tmpfs:
       - /tmp:size=64m,mode=1777
 
-  # 可选真人 QQ OneBot 侧车。首次使用需阅读所选镜像的当前文档并完成扫码登录。
+  # 可选真人 QQ OneBot 侧车。部署不等待交互登录；启动后在 MUA-Bot GUI 扫描共享缓存中的二维码。
   # 非官方协议可能违反平台条款、触发风控或封号；建议使用专用低权限账号。
   qq-bridge:
     image: ${NAPCAT_IMAGE:-mlikiowa/napcat-docker:latest}
     user: "${NAPCAT_UID:-0}:${NAPCAT_GID:-0}"
     restart: unless-stopped
+    stdin_open: false
+    tty: false
     depends_on:
       init-volumes:
         condition: service_completed_successfully
@@ -60,6 +66,7 @@ services:
     volumes:
       - /var/lib/docker/volumes/mua-bot-napcat-config/_data:/app/napcat/config
       - /var/lib/docker/volumes/mua-bot-qq-session/_data:/app/.config/QQ
+      - /var/lib/docker/volumes/mua-bot-napcat-cache/_data:/app/napcat/cache
     ports:
       - "${NAPCAT_WEBUI_BIND_IP:-0.0.0.0}:${NAPCAT_WEBUI_PORT:-6099}:6099"
       - "127.0.0.1:${ONEBOT_HTTP_PORT:-6000}:3000"

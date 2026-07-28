@@ -32,6 +32,7 @@ class QQConnectionConfig(BaseModel):
     webui_base_url: str = "http://qq-bridge:6099"
     webui_public_url: str = ""
     webui_public_port: int = Field(default=6099, ge=1, le=65535)
+    qrcode_path: str = "/app/napcat-cache/qrcode.png"
     managed_group_ids: list[str] = Field(default_factory=list)
     administrator_qq_ids: list[str] = Field(default_factory=list)
     announcement_actions: list[str] = Field(
@@ -253,6 +254,7 @@ class Settings(BaseSettings):
                 webui_base_url=self.qq.webui_base_url,
                 webui_public_url=self.qq.webui_public_url,
                 webui_public_port=self.qq.webui_public_port,
+                qrcode_path=self.qq.qrcode_path,
                 managed_group_ids=self.qq.managed_group_ids,
                 administrator_qq_ids=self.qq.administrator_qq_ids,
                 announcement_actions=self.qq.announcement_actions,
