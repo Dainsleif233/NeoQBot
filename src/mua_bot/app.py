@@ -89,8 +89,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "connect-src 'self'; frame-src http: https:; object-src 'none'; "
             "base-uri 'self'; frame-ancestors 'self'"
         )
-        if request.url.path.startswith("/api/"):
-            response.headers["Cache-Control"] = "no-store"
+        if request.url.path.startswith(("/api/", "/gui")):
+            response.headers["Cache-Control"] = "no-store, max-age=0, must-revalidate"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Expires"] = "0"
         return response
 
     async def require_admin(

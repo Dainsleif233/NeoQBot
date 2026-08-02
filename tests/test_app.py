@@ -1,6 +1,8 @@
 import hashlib
 import hmac
 import json
+import os
+import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -31,7 +33,10 @@ def test_health_and_signed_webhook(tmp_path: Path) -> None:
 
     with TestClient(create_app(app_settings(tmp_path))) as client:
         assert client.get("/healthz").status_code == 200
-        assert "MUA-Bot Console" in client.get("/gui/").text
+        gui = client.get("/gui/")
+        assert "MUA-Bot Console" in gui.text
+        assert "/gui/assets/app.js?v=0.2.1" in gui.text
+        assert gui.headers["cache-control"] == "no-store, max-age=0, must-revalidate"
         accepted = client.post(
             "/webhooks/onebot",
             content=body,
@@ -197,6 +202,32 @@ def test_gui_serves_napcat_qrcode_only_to_authenticated_admin(tmp_path: Path) ->
     assert response.headers["content-type"] == "image/png"
     assert response.headers["cache-control"] == "no-store, max-age=0"
     assert response.content.startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_gui_refuses_to_serve_expired_napcat_qrcode(tmp_path: Path) -> None:
+    qrcode = tmp_path / "qrcode.png"
+    qrcode.write_bytes(b"\x89PNG\r\n\x1a\nexpired")
+    old = time.time() - 120
+    os.utime(qrcode, (old, old))
+    values = app_settings(tmp_path).model_dump()
+    values["qq"]["qrcode_path"] = str(qrcode)
+
+    with TestClient(create_app(Settings.model_validate(values))) as client:
+        login = client.post(
+            "/api/gui/auth/login", json={"username": "admin", "password": "muaadmin"}
+        ).json()
+        client.post(
+            "/api/gui/auth/password",
+            headers={"X-CSRF-Token": login["csrf_token"]},
+            json={
+                "current_password": "muaadmin",
+                "new_password": "a-new-secure-password",
+            },
+        )
+        response = client.get("/api/gui/integrations/qq/qrcode")
+
+    assert response.status_code == 410
+    assert "二维码已过期" in response.json()["detail"]
 
 
 def test_gui_refreshes_qrcode_and_reveals_webui_token_to_admin(tmp_path: Path) -> None:

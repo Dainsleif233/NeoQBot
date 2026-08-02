@@ -343,8 +343,15 @@ def register_gui(
         try:
             if not path.is_file():
                 raise HTTPException(status_code=404, detail="NapCat 尚未生成登录二维码")
-            if path.stat().st_size > 5 * 1024 * 1024:
+            stat = path.stat()
+            if stat.st_size > 5 * 1024 * 1024:
                 raise HTTPException(status_code=422, detail="NapCat 二维码文件异常")
+            age_seconds = max(0.0, time.time() - stat.st_mtime)
+            if age_seconds > 90:
+                raise HTTPException(
+                    status_code=410,
+                    detail="NapCat 二维码已过期，请点击“获取新二维码”",
+                )
             with path.open("rb") as handle:
                 if handle.read(8) != b"\x89PNG\r\n\x1a\n":
                     raise HTTPException(status_code=422, detail="NapCat 二维码不是有效 PNG")
@@ -371,7 +378,11 @@ def register_gui(
         return FileResponse(
             path,
             media_type="image/png",
-            headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"},
+            headers={
+                "Cache-Control": "no-store, max-age=0, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+            },
         )
 
     @app.post("/api/gui/integrations/qq/qrcode/refresh")
