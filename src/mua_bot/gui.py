@@ -2,6 +2,7 @@ from __future__ import annotations
 
 # ruff: noqa: B008 - FastAPI dependency injection intentionally uses Depends in defaults.
 import asyncio
+import hashlib
 import os
 import secrets
 import time
@@ -55,6 +56,7 @@ def _preserve_masked_secrets(candidate: dict[str, Any], current: Settings) -> di
     secret_values = {
         ("app", "admin_api_token"): current.app.admin_api_token,
         ("qq", "access_token"): current.qq.access_token,
+        ("qq", "webui_token"): current.qq.webui_token,
         ("qq", "webhook_secret"): current.qq.webhook_secret,
         ("llm", "api_key"): current.llm.api_key,
         ("gui", "bootstrap_password"): current.gui.bootstrap_password,
@@ -74,7 +76,7 @@ def _preserve_masked_secrets(candidate: dict[str, Any], current: Settings) -> di
             existing = current_bots.get(str(incoming.get("id", "")))
             if existing is None:
                 continue
-            for key in ("access_token", "webhook_secret"):
+            for key in ("access_token", "webui_token", "webhook_secret"):
                 if incoming.get(key) in (None, "", "***"):
                     incoming[key] = getattr(existing, key)
     feishu = candidate.setdefault("feishu", {})
@@ -352,6 +354,14 @@ def register_gui(
             raise HTTPException(status_code=404, detail=f"无法读取 NapCat 二维码：{exc}") from exc
         return path
 
+    def qrcode_fingerprint(path: Path) -> tuple[int, int, str] | None:
+        try:
+            stat = path.stat()
+            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+            return stat.st_mtime_ns, stat.st_size, digest
+        except OSError:
+            return None
+
     @app.get("/api/gui/integrations/qq/qrcode")
     async def gui_qq_qrcode(
         _: GuiSession = Depends(ready_admin),
@@ -363,6 +373,51 @@ def register_gui(
             media_type="image/png",
             headers={"Cache-Control": "no-store, max-age=0", "Pragma": "no-cache"},
         )
+
+    @app.post("/api/gui/integrations/qq/qrcode/refresh")
+    async def gui_qq_qrcode_refresh(
+        _: GuiSession = Depends(ready_admin_csrf),
+        bot_id: str | None = Query(default=None),
+    ) -> dict[str, Any]:
+        bot = get_settings().qq_bot(bot_id)
+        if bot is None:
+            raise HTTPException(status_code=404, detail="未知 QQ Bot")
+        path = Path(bot.qrcode_path)
+        before = await asyncio.to_thread(qrcode_fingerprint, path)
+        try:
+            result = await get_container().napcat_clients[bot.id].refresh_qrcode()
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail=f"NapCat 刷新二维码失败：{exc}") from exc
+        deadline = time.monotonic() + 8
+        after = before
+        while time.monotonic() < deadline:
+            await asyncio.sleep(0.2)
+            after = await asyncio.to_thread(qrcode_fingerprint, path)
+            if after is not None and after != before:
+                break
+        if after is None or after == before:
+            raise HTTPException(status_code=504, detail="NapCat 已接收刷新请求，但二维码文件未更新")
+        return {
+            "ok": True,
+            "bot_id": bot.id,
+            "changed": True,
+            "updated_at": after[0] / 1_000_000_000,
+            "result": result,
+        }
+
+    @app.post("/api/gui/integrations/qq/webui-token")
+    async def gui_qq_webui_token(
+        _: GuiSession = Depends(ready_admin_csrf),
+        bot_id: str | None = Query(default=None),
+    ) -> dict[str, str]:
+        bot = get_settings().qq_bot(bot_id)
+        if bot is None:
+            raise HTTPException(status_code=404, detail="未知 QQ Bot")
+        try:
+            token = get_container().napcat_clients[bot.id].token()
+        except Exception as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {"bot_id": bot.id, "token": token}
 
     @app.get("/api/gui/integrations/qq")
     async def gui_qq_status(
@@ -377,23 +432,61 @@ def register_gui(
                 raise HTTPException(status_code=404, detail="未知 QQ Bot")
         results = []
         for bot in bots:
+            try:
+                webui_token_available = bool(get_container().napcat_clients[bot.id].token())
+            except Exception:
+                webui_token_available = False
             if not bot.enabled:
-                status = {"ok": True, "enabled": False}
+                onebot_status: dict[str, Any] = {"ok": True, "enabled": False}
+                napcat_status: dict[str, Any] = {"ok": True, "enabled": False}
+                connection_state = "disabled"
+                connection_message = "QQ Bot 已停用"
             else:
-                try:
-                    status = await get_container().qq_clients[bot.id].doctor()
-                except Exception as exc:
-                    status = {"ok": False, "error": str(exc)}
+                onebot_result, napcat_result = await asyncio.gather(
+                    get_container().qq_clients[bot.id].doctor(),
+                    get_container().napcat_clients[bot.id].check_login_status(),
+                    return_exceptions=True,
+                )
+                onebot_status = (
+                    {"ok": False, "error": str(onebot_result)}
+                    if isinstance(onebot_result, BaseException)
+                    else onebot_result
+                )
+                napcat_status = (
+                    {"ok": False, "error": str(napcat_result)}
+                    if isinstance(napcat_result, BaseException)
+                    else {"ok": True, **napcat_result}
+                )
+                if onebot_status.get("ok"):
+                    connection_state = "connected"
+                    connection_message = "QQ 已登录，OneBot 连接正常"
+                elif napcat_status.get("isOffline"):
+                    connection_state = "qq_offline"
+                    connection_message = "QQ 登录态存在，但客户端已离线"
+                elif napcat_status.get("isLogin"):
+                    connection_state = "qq_logged_in_onebot_unavailable"
+                    connection_message = "QQ 已登录，但 OneBot HTTP 服务不可用"
+                elif napcat_status.get("ok"):
+                    connection_state = "waiting_for_scan"
+                    connection_message = "NapCat 已连接，等待扫描二维码"
+                else:
+                    connection_state = "napcat_unreachable"
+                    connection_message = "NapCat WebUI 与 OneBot 均不可访问"
             results.append(
                 {
                     "id": bot.id,
                     "name": bot.name,
                     "enabled": bot.enabled,
-                    "status": status,
+                    "status": onebot_status,
+                    "onebot_status": onebot_status,
+                    "napcat_status": napcat_status,
+                    "connection_state": connection_state,
+                    "connection_message": connection_message,
                     "webhook_url": f"/webhooks/onebot/{bot.id}",
                     "webui_public_url": bot.webui_public_url,
                     "webui_public_port": bot.webui_public_port,
                     "qrcode_available": Path(bot.qrcode_path).is_file(),
+                    "webui_token_available": webui_token_available,
                     "tasks": bot.tasks.model_dump(mode="json"),
                 }
             )

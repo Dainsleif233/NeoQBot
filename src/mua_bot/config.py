@@ -11,6 +11,18 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def resolve_secret(value: str, file_path: str = "") -> str:
+    """Prefer a mounted secret file while retaining direct-value compatibility."""
+    if file_path:
+        try:
+            mounted = Path(file_path).read_text(encoding="utf-8").strip()
+        except OSError:
+            mounted = ""
+        if mounted:
+            return mounted
+    return value.strip()
+
+
 class AppConfig(BaseModel):
     environment: str = "development"
     host: str = "0.0.0.0"
@@ -27,9 +39,12 @@ class QQConnectionConfig(BaseModel):
     enabled: bool = True
     onebot_base_url: str = "http://qq-bridge:3000"
     access_token: str = ""
+    access_token_file: str = "/app/data/secrets/napcat-onebot.token"
     webhook_secret: str = ""
     request_timeout_seconds: float = 15.0
     webui_base_url: str = "http://qq-bridge:6099"
+    webui_token: str = ""
+    webui_token_file: str = "/app/data/secrets/napcat-webui.token"
     webui_public_url: str = ""
     webui_public_port: int = Field(default=6099, ge=1, le=65535)
     qrcode_path: str = "/app/napcat-cache/qrcode.png"
@@ -249,9 +264,12 @@ class Settings(BaseSettings):
                 enabled=self.qq.enabled,
                 onebot_base_url=self.qq.onebot_base_url,
                 access_token=self.qq.access_token,
+                access_token_file=self.qq.access_token_file,
                 webhook_secret=self.qq.webhook_secret,
                 request_timeout_seconds=self.qq.request_timeout_seconds,
                 webui_base_url=self.qq.webui_base_url,
+                webui_token=self.qq.webui_token,
+                webui_token_file=self.qq.webui_token_file,
                 webui_public_url=self.qq.webui_public_url,
                 webui_public_port=self.qq.webui_public_port,
                 qrcode_path=self.qq.qrcode_path,
@@ -367,9 +385,11 @@ class Settings(BaseSettings):
     def redacted_dict(self) -> dict[str, object]:
         data = self.model_dump()
         data["qq"]["access_token"] = "***" if self.qq.access_token else ""
+        data["qq"]["webui_token"] = "***" if self.qq.webui_token else ""
         data["qq"]["webhook_secret"] = "***" if self.qq.webhook_secret else ""
         for bot in data["qq"]["bots"]:
             bot["access_token"] = "***" if bot["access_token"] else ""
+            bot["webui_token"] = "***" if bot["webui_token"] else ""
             bot["webhook_secret"] = "***" if bot["webhook_secret"] else ""
         data["llm"]["api_key"] = "***" if self.llm.api_key else ""
         data["app"]["admin_api_token"] = "***" if self.app.admin_api_token else ""
@@ -391,10 +411,11 @@ class Settings(BaseSettings):
                 errors.append(f"{prefix}.managed_group_ids 不能为空")
             if not bot.administrator_qq_ids:
                 errors.append(f"{prefix}.administrator_qq_ids 不能为空")
-            if not bot.access_token:
+            onebot_token = resolve_secret(bot.access_token, bot.access_token_file)
+            if not onebot_token:
                 warnings.append(f"{prefix}.access_token 未设置")
-            if not bot.webhook_secret:
-                warnings.append(f"{prefix}.webhook_secret 未设置，Webhook 无法校验 HMAC")
+            if not bot.webhook_secret and not onebot_token:
+                warnings.append(f"{prefix} 未设置 Webhook HMAC 或 Bearer Token，事件入口未鉴权")
         if self.llm.driver == "openai_compatible":
             if not self.llm.api_key:
                 errors.append("llm.api_key 未设置")
@@ -453,6 +474,7 @@ class Settings(BaseSettings):
         environment_secrets = {
             "MUA_APP__ADMIN_API_TOKEN": ("app", "admin_api_token"),
             "MUA_QQ__ACCESS_TOKEN": ("qq", "access_token"),
+            "MUA_QQ__WEBUI_TOKEN": ("qq", "webui_token"),
             "MUA_QQ__WEBHOOK_SECRET": ("qq", "webhook_secret"),
             "MUA_LLM__API_KEY": ("llm", "api_key"),
             "MUA_GUI__BOOTSTRAP_PASSWORD": ("gui", "bootstrap_password"),

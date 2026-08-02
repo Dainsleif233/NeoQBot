@@ -156,9 +156,11 @@ QQ Bot 下的事务依赖如下：
 5. 公告属于扩展 API。MUA-Bot 会依次尝试 `qq.announcement_actions` 中的动作名，请按所用
    OneBot 实现的当前文档调整。
 
-Docker 部署过程不要求交互登录。NapCat 会在后台把当前二维码写入共享缓存卷；容器全部启动后，
-登录 MUA-Bot GUI，在“Bot 编排”页面点击“扫码登录”即可直接看到二维码。页面会自动刷新二维码并
-轮询 OneBot 登录状态，6099 端口只作为 NapCat 高级设置入口。
+Docker 部署过程不要求交互登录。`init-volumes` 会生成并持久化随机 OneBot Token 与 NapCat WebUI
+Token，自动启用 `0.0.0.0:3000` HTTP API，并把反向 HTTP 配置为 MUA-Bot Webhook。NapCat 会在后台
+把当前二维码写入共享缓存卷；容器全部启动后，登录 MUA-Bot GUI，在“Bot 编排”页面点击“扫码登录”
+即可直接看到二维码。“获取新二维码”会调用 NapCat 刷新 API，而不是重复读取旧图片；页面也会轮询
+NapCat 与 OneBot 两侧状态。6099 端口只作为高级设置入口，所需 Token 可在扫码窗口中一键复制。
 
 NapCat 控制台中反复出现 `Login Error, ErrCode: 3` 通常表示上一张二维码无人扫描并已过期，
 不表示 MUA-Bot 部署失败。只要 `qq-bridge` 仍为 `running`，应在 GUI 中扫描最新二维码。
@@ -234,8 +236,8 @@ feishu:
 docker compose up -d --build
 ```
 
-`init-volumes` 一次性服务会自动创建绝对路径目录、设置 MUA-Bot 与飞书目录的 UID `10001`
-权限，然后退出；MUA-Bot 和 NapCat 会在它成功后自动启动。因此不再需要手工执行
+`init-volumes` 一次性服务会自动创建绝对路径目录、生成 NapCat/OneBot 密钥与配置、设置 MUA-Bot
+与飞书目录的 UID `10001` 权限，然后退出；MUA-Bot 和 NapCat 会在它成功后自动启动。因此不再需要手工执行
 `mkdir`、`chown`，也不需要 `--profile napcat`。
 NapCat 二维码缓存会写入
 `/var/lib/docker/volumes/mua-bot-napcat-cache/_data/qrcode.png`，并以只读方式挂载给 MUA-Bot；
@@ -287,6 +289,8 @@ Docker 容器内部监听端口：
 - `http://服务器IP:6688/gui/`：MUA-Bot 管理后台；
 - 初始管理员：`admin` / `muaadmin`，首次登录强制修改密码；
 - `http://服务器IP:6099/`：NapCat 高级设置页面；QQ 扫码登录无需直接访问此端口；
+- NapCat WebUI Token 持久化在 MUA 数据卷的 `secrets/napcat-webui.token`，管理员可在扫码窗口复制；
+- OneBot Token 持久化在 MUA 数据卷的 `secrets/napcat-onebot.token`，MUA-Bot 与 NapCat 自动共同读取；
 - 配置自动写入并持久化到
   `/var/lib/docker/volumes/mua-bot-data/_data/config.yaml`；
 - 飞书 CLI 真人账号登录态持久化到

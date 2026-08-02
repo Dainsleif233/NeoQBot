@@ -1,0 +1,253 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import secrets
+import tempfile
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
+import httpx
+
+from .config import QQBotConfig, QQConfig, resolve_secret
+
+
+class NapCatError(RuntimeError):
+    pass
+
+
+def _write_json(path: Path, payload: dict[str, Any], mode: int = 0o600) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_name = ""
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary_name = handle.name
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary_name, mode)
+        os.replace(temporary_name, path)
+    finally:
+        if temporary_name and Path(temporary_name).exists():
+            Path(temporary_name).unlink()
+
+
+def _load_json(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _ensure_secret(path: Path) -> str:
+    try:
+        current = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        current = ""
+    if current:
+        return current
+    path.parent.mkdir(parents=True, exist_ok=True)
+    value = secrets.token_urlsafe(32)
+    path.write_text(value + "\n", encoding="utf-8")
+    os.chmod(path, 0o600)
+    return value
+
+
+def initialize_napcat(
+    config_dir: str | Path,
+    secret_dir: str | Path,
+    webhook_url: str = "http://mua-bot:8080/webhooks/onebot/default",
+    http_port: int = 3000,
+    webui_port: int = 6099,
+) -> dict[str, str]:
+    """Create persistent secrets and enforce the NapCat endpoints MUA-Bot requires."""
+    config_path = Path(config_dir)
+    secrets_path = Path(secret_dir)
+    onebot_token_path = secrets_path / "napcat-onebot.token"
+    webui_token_path = secrets_path / "napcat-webui.token"
+    onebot_token = _ensure_secret(onebot_token_path)
+    webui_token = _ensure_secret(webui_token_path)
+
+    webui_config_path = config_path / "webui.json"
+    webui_config = _load_json(webui_config_path)
+    webui_config.update(
+        {
+            "host": "0.0.0.0",
+            "port": webui_port,
+            "token": webui_token,
+            "loginRate": int(webui_config.get("loginRate") or 3),
+        }
+    )
+    _write_json(webui_config_path, webui_config)
+
+    def replace_named(
+        items: object,
+        name: str,
+        replacement: dict[str, Any],
+        conflicts: Callable[[dict[str, Any]], bool] | None = None,
+    ) -> list[Any]:
+        source = items if isinstance(items, list) else []
+        retained = [
+            item
+            for item in source
+            if not (
+                isinstance(item, dict)
+                and (item.get("name") == name or (conflicts is not None and conflicts(item)))
+            )
+        ]
+        retained.append(replacement)
+        return retained
+
+    def configure_onebot(path: Path) -> None:
+        onebot_config = _load_json(path)
+        network = onebot_config.get("network")
+        if not isinstance(network, dict):
+            network = {}
+            onebot_config["network"] = network
+        network["httpServers"] = replace_named(
+            network.get("httpServers", []),
+            "mua-bot-http",
+            {
+                "name": "mua-bot-http",
+                "enable": True,
+                "port": http_port,
+                "host": "0.0.0.0",
+                "enableCors": False,
+                "enableWebsocket": False,
+                "messagePostFormat": "array",
+                "token": onebot_token,
+                "debug": False,
+            },
+            conflicts=lambda item: item.get("port") == http_port,
+        )
+        network["httpClients"] = replace_named(
+            network.get("httpClients", []),
+            "mua-bot-events",
+            {
+                "name": "mua-bot-events",
+                "enable": True,
+                "url": webhook_url,
+                "messagePostFormat": "array",
+                "reportSelfMessage": False,
+                "token": onebot_token,
+                "debug": False,
+            },
+            conflicts=lambda item: item.get("url") == webhook_url,
+        )
+        network.setdefault("httpSseServers", [])
+        network.setdefault("websocketServers", [])
+        network.setdefault("websocketClients", [])
+        network.setdefault("plugins", [])
+        _write_json(path, onebot_config)
+
+    onebot_config_path = config_path / "onebot11.json"
+    account_configs = set(config_path.glob("onebot11*.json"))
+    account_configs.add(onebot_config_path)
+    for candidate in sorted(account_configs):
+        configure_onebot(candidate)
+
+    return {
+        "onebot_config": str(onebot_config_path),
+        "webui_config": str(webui_config_path),
+        "onebot_token_file": str(onebot_token_path),
+        "webui_token_file": str(webui_token_path),
+    }
+
+
+class NapCatWebUiClient:
+    def __init__(
+        self,
+        config: QQConfig | QQBotConfig,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
+        self.config = config
+        self._credential = ""
+        self._client = httpx.AsyncClient(
+            base_url=config.webui_base_url.rstrip("/") + "/",
+            timeout=config.request_timeout_seconds,
+            transport=transport,
+        )
+
+    def token(self) -> str:
+        token = resolve_secret(self.config.webui_token, self.config.webui_token_file)
+        if not token:
+            raise NapCatError("NapCat WebUI Token 尚未初始化")
+        return token
+
+    @staticmethod
+    def _data(payload: object) -> Any:
+        if not isinstance(payload, dict):
+            raise NapCatError("NapCat 返回了无效响应")
+        code = payload.get("code")
+        if code not in (None, 0):
+            raise NapCatError(str(payload.get("message") or payload.get("msg") or payload))
+        if payload.get("status") in ("failed", "error"):
+            raise NapCatError(str(payload.get("message") or payload))
+        return payload.get("data")
+
+    async def _login(self) -> str:
+        digest = hashlib.sha256((self.token() + ".napcat").encode("utf-8")).hexdigest()
+        response = await self._client.post("api/auth/login", json={"hash": digest})
+        response.raise_for_status()
+        data = self._data(response.json())
+        if not isinstance(data, dict):
+            raise NapCatError("NapCat WebUI 登录响应缺少凭据")
+        if data.get("require2FA"):
+            raise NapCatError("NapCat WebUI 已启用 2FA，请先在 6099 控制台完成验证")
+        credential = str(data.get("Credential") or data.get("credential") or "").strip()
+        if not credential:
+            raise NapCatError("NapCat WebUI 登录响应缺少凭据")
+        self._credential = credential
+        return credential
+
+    async def _post(self, path: str, retry: bool = True) -> Any:
+        if not self._credential:
+            await self._login()
+        response = await self._client.post(
+            path.lstrip("/"), headers={"Authorization": f"Bearer {self._credential}"}, json={}
+        )
+        if response.status_code == 401 and retry:
+            self._credential = ""
+            await self._login()
+            return await self._post(path, retry=False)
+        response.raise_for_status()
+        try:
+            return self._data(response.json())
+        except NapCatError as exc:
+            message = str(exc).lower()
+            if retry and any(
+                marker in message
+                for marker in ("authorization failed", "token has been revoked", "credential")
+            ):
+                self._credential = ""
+                await self._login()
+                return await self._post(path, retry=False)
+            raise
+
+    async def check_login_status(self) -> dict[str, Any]:
+        data = await self._post("api/QQLogin/CheckLoginStatus")
+        if not isinstance(data, dict):
+            raise NapCatError("NapCat 登录状态响应无效")
+        return data
+
+    async def get_qrcode(self) -> dict[str, Any]:
+        data = await self._post("api/QQLogin/GetQQLoginQrcode")
+        return data if isinstance(data, dict) else {}
+
+    async def refresh_qrcode(self) -> dict[str, Any]:
+        data = await self._post("api/QQLogin/RefreshQRcode")
+        return data if isinstance(data, dict) else {}
+
+    async def close(self) -> None:
+        await self._client.aclose()

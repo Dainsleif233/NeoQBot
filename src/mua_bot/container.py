@@ -9,6 +9,7 @@ from .auth import GuiAuth
 from .config import Settings
 from .database import Database
 from .events import EventHandler
+from .napcat import NapCatWebUiClient
 from .ports import DecisionEngine, FeishuGateway
 from .recording import LocalMessageRecorder
 from .runtime import Runtime
@@ -21,6 +22,7 @@ class Container:
     database: Database
     qq: OneBotClient
     qq_clients: dict[str, OneBotClient]
+    napcat_clients: dict[str, NapCatWebUiClient]
     engine: DecisionEngine
     feishu: FeishuGateway
     feishu_clients: dict[str, FeishuGateway]
@@ -31,6 +33,8 @@ class Container:
     async def close(self) -> None:
         await self.runtime.stop()
         for client in self.qq_clients.values():
+            await client.close()
+        for client in self.napcat_clients.values():
             await client.close()
         close = getattr(self.engine, "close", None)
         if close is not None:
@@ -47,6 +51,7 @@ def build_container(settings: Settings) -> Container:
     qq_clients = {
         bot.id: OneBotClient(bot, dry_run=settings.app.dry_run) for bot in qq_bots
     }
+    napcat_clients = {bot.id: NapCatWebUiClient(bot) for bot in qq_bots}
     qq = qq_clients[qq_bots[0].id]
     if settings.llm.driver == "openai_compatible":
         engine: DecisionEngine = OpenAICompatibleDecisionEngine(
@@ -100,6 +105,7 @@ def build_container(settings: Settings) -> Container:
         database,
         qq,
         qq_clients,
+        napcat_clients,
         engine,
         feishu,
         feishu_clients,

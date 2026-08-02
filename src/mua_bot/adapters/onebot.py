@@ -7,7 +7,7 @@ from typing import Any
 
 import httpx
 
-from ..config import QQBotConfig, QQConfig
+from ..config import QQBotConfig, QQConfig, resolve_secret
 from ..models import Announcement, JoinRequest
 
 
@@ -55,8 +55,9 @@ class OneBotClient:
         self.config = config
         self.dry_run = dry_run
         headers: dict[str, str] = {}
-        if config.access_token:
-            headers["Authorization"] = f"Bearer {config.access_token}"
+        access_token = resolve_secret(config.access_token, config.access_token_file)
+        if access_token:
+            headers["Authorization"] = f"Bearer {access_token}"
         self._client = httpx.AsyncClient(
             base_url=config.onebot_base_url.rstrip("/") + "/",
             headers=headers,

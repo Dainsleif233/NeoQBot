@@ -11,7 +11,7 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, status
 
 from . import __version__
-from .config import Settings
+from .config import Settings, resolve_secret
 from .container import Container, build_container
 from .gui import register_gui
 
@@ -23,6 +23,21 @@ def _verify_onebot_signature(body: bytes, signature: str | None, secret: str) ->
         return False
     digest = hmac.new(secret.encode("utf-8"), body, hashlib.sha1).hexdigest()
     return hmac.compare_digest(signature, f"sha1={digest}")
+
+
+def _verify_onebot_auth(
+    body: bytes,
+    signature: str | None,
+    authorization: str | None,
+    webhook_secret: str,
+    access_token: str,
+) -> bool:
+    if webhook_secret:
+        return _verify_onebot_signature(body, signature, webhook_secret)
+    if access_token:
+        supplied = authorization.removeprefix("Bearer ").strip() if authorization else ""
+        return hmac.compare_digest(supplied, access_token)
+    return True
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -108,6 +123,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         bot_id: str,
         request: Request,
         x_signature: str | None,
+        authorization: str | None,
     ) -> dict[str, object]:
         bot = resolved_settings.qq_bot(bot_id)
         if bot is None:
@@ -117,8 +133,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         body = await request.body()
         if len(body) > 2 * 1024 * 1024:
             raise HTTPException(status_code=413, detail="Event body too large")
-        if not _verify_onebot_signature(body, x_signature, bot.webhook_secret):
-            raise HTTPException(status_code=401, detail="Invalid OneBot signature")
+        access_token = resolve_secret(bot.access_token, bot.access_token_file)
+        if not _verify_onebot_auth(
+            body, x_signature, authorization, bot.webhook_secret, access_token
+        ):
+            raise HTTPException(status_code=401, detail="Invalid OneBot webhook authentication")
         try:
             event = json.loads(body)
         except json.JSONDecodeError as exc:
@@ -135,19 +154,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def onebot_webhook(
         request: Request,
         x_signature: Annotated[str | None, Header()] = None,
+        authorization: Annotated[str | None, Header()] = None,
     ) -> dict[str, object]:
         bot = resolved_settings.qq_bot()
         if bot is None:
             raise HTTPException(status_code=503, detail="No QQ Bot is configured")
-        return await accept_onebot_webhook(bot.id, request, x_signature)
+        return await accept_onebot_webhook(bot.id, request, x_signature, authorization)
 
     @app.post("/webhooks/onebot/{bot_id}", status_code=status.HTTP_202_ACCEPTED)
     async def onebot_bot_webhook(
         bot_id: str,
         request: Request,
         x_signature: Annotated[str | None, Header()] = None,
+        authorization: Annotated[str | None, Header()] = None,
     ) -> dict[str, object]:
-        return await accept_onebot_webhook(bot_id, request, x_signature)
+        return await accept_onebot_webhook(bot_id, request, x_signature, authorization)
 
     @app.get("/api/v1/status", dependencies=[Depends(require_admin)])
     async def api_status() -> dict[str, object]:

@@ -89,6 +89,30 @@ def test_bot_specific_webhook_uses_its_own_secret(tmp_path: Path) -> None:
     assert rejected.status_code == 401
 
 
+def test_onebot_webhook_accepts_napcat_bearer_token(tmp_path: Path) -> None:
+    settings = app_settings(tmp_path)
+    values = settings.model_dump()
+    values["qq"]["webhook_secret"] = ""
+    values["qq"]["access_token"] = "onebot-token"
+    values["qq"]["access_token_file"] = ""
+    body = json.dumps({"post_type": "meta_event"}).encode()
+
+    with TestClient(create_app(Settings.model_validate(values))) as client:
+        accepted = client.post(
+            "/webhooks/onebot",
+            content=body,
+            headers={"Content-Type": "application/json", "Authorization": "Bearer onebot-token"},
+        )
+        rejected = client.post(
+            "/webhooks/onebot",
+            content=body,
+            headers={"Content-Type": "application/json", "Authorization": "Bearer bad"},
+        )
+
+    assert accepted.status_code == 202
+    assert rejected.status_code == 401
+
+
 def test_gui_forces_default_password_change(tmp_path: Path) -> None:
     with TestClient(create_app(app_settings(tmp_path))) as client:
         login = client.post(
@@ -173,3 +197,44 @@ def test_gui_serves_napcat_qrcode_only_to_authenticated_admin(tmp_path: Path) ->
     assert response.headers["content-type"] == "image/png"
     assert response.headers["cache-control"] == "no-store, max-age=0"
     assert response.content.startswith(b"\x89PNG\r\n\x1a\n")
+
+
+def test_gui_refreshes_qrcode_and_reveals_webui_token_to_admin(tmp_path: Path) -> None:
+    qrcode = tmp_path / "qrcode.png"
+    qrcode.write_bytes(b"\x89PNG\r\n\x1a\nold")
+    values = app_settings(tmp_path).model_dump()
+    values["qq"]["qrcode_path"] = str(qrcode)
+    app = create_app(Settings.model_validate(values))
+    napcat = app.state.container.napcat_clients["default"]
+
+    async def refresh() -> dict[str, bool]:
+        qrcode.write_bytes(b"\x89PNG\r\n\x1a\nnew")
+        return {"refreshed": True}
+
+    napcat.refresh_qrcode = refresh
+    napcat.token = lambda: "napcat-webui-token"
+
+    with TestClient(app) as client:
+        login = client.post(
+            "/api/gui/auth/login", json={"username": "admin", "password": "muaadmin"}
+        ).json()
+        client.post(
+            "/api/gui/auth/password",
+            headers={"X-CSRF-Token": login["csrf_token"]},
+            json={
+                "current_password": "muaadmin",
+                "new_password": "a-new-secure-password",
+            },
+        )
+        refreshed = client.post(
+            "/api/gui/integrations/qq/qrcode/refresh",
+            headers={"X-CSRF-Token": login["csrf_token"]},
+        )
+        token = client.post(
+            "/api/gui/integrations/qq/webui-token",
+            headers={"X-CSRF-Token": login["csrf_token"]},
+        )
+
+    assert refreshed.status_code == 200
+    assert refreshed.json()["changed"] is True
+    assert token.json()["token"] == "napcat-webui-token"

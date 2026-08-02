@@ -16,10 +16,14 @@ qq:
   enabled: true
   # Compose 内使用服务名；Windows 本地直连外部 NapCat 时可改为 http://127.0.0.1:3000。
   onebot_base_url: http://qq-bridge:3000
+  # Compose 自动生成随机 Token 并写入持久卷；文件存在时优先于下面的明文值。
   access_token: ""
+  access_token_file: /app/data/secrets/napcat-onebot.token
   webhook_secret: ""
   request_timeout_seconds: 15
   webui_base_url: http://qq-bridge:6099
+  webui_token: ""
+  webui_token_file: /app/data/secrets/napcat-webui.token
   # 留空时 GUI 自动使用当前浏览器主机名和 webui_public_port。
   webui_public_url: ""
   webui_public_port: 6099
@@ -42,7 +46,9 @@ qq:
   #     enabled: true
   #     onebot_base_url: http://qq-join-bridge:3000
   #     access_token: ""
+  #     access_token_file: /app/data/secrets/qq-join-onebot.token
   #     webhook_secret: ""
+  #     webui_token_file: /app/data/secrets/qq-join-webui.token
   #     webui_public_port: 6100
   #     qrcode_path: /app/napcat-cache/qq-join/qrcode.png
   #     managed_group_ids: ["123456789"]

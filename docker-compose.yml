@@ -8,7 +8,12 @@ services:
       - sh
       - -ec
       - |
+        mua-bot init-napcat \
+          --napcat-config-dir /mnt/napcat-config \
+          --secret-dir /mnt/mua-data/secrets \
+          --webhook-url http://mua-bot:8080/webhooks/onebot/default
         chown -R 10001:10001 /mnt/mua-data /mnt/feishu-home
+        chmod 600 /mnt/mua-data/secrets/napcat-onebot.token /mnt/mua-data/secrets/napcat-webui.token
         chmod 700 /mnt/mua-data /mnt/feishu-home /mnt/napcat-config /mnt/qq-session
         chmod 755 /mnt/napcat-cache
     volumes:
