@@ -14,9 +14,17 @@ OpenAI-compatible 模型进行结构化审核。
 - SQLite 审计记录、健康检查、管理 API、CLI、AstrBot 控制插件；
 - 默认 30 天消息保留策略与每日自动清理（公告版本不自动删除）；
 - 内置中文管理 GUI：QQ 二维码扫码登录、分步设置向导、配置热加载、任务执行与审计浏览；
-- GUI 默认采用纯黑单色界面，可一键切换纯白主题，站点图标统一使用 `muaball.png`；
+- GUI 采用 Win11 / Codex / VS Code 风格的中性黑白工作台，可切换深浅主题；
 - 多 Bot 编排：可同时配置多个 QQ / 飞书账号，并让不同 QQ Bot 独立承担入群管理、
   消息检测和公告同步事务；
+- 资源编排画布：右键创建 QQ / 飞书 Bot、QQ群、飞书群和知识库，拖动节点并从端口拖线，
+  支持一个 Bot 管理多个群、多个 Bot 协作管理同一群，以及群/机器人与知识库之间的归档、
+  检索和同步关系；
+- 节点详情检查器：点击账号可查看连接状态、扫码登录或进入完整设置；点击群可直接浏览
+  已采集的聊天、公告、风控分析、入群申请与负责 Bot；
+- 可检索审计浏览器：按记录类型、Bot、群号和关键词组合筛选，支持服务端分页与折叠查看
+  原始结构化记录；
+- `Ctrl+K` 命令面板：快速跳转页面、新建编排资源、执行分析/公告/维护任务和切换主题；
 - 入群事务支持“只检测登记”与“执行管理”分离；消息事务支持纯记录、长期检测、轮询检测、
   分析报告和管理员通知分离；公告事务支持一键全量同步与自动同步；
 - Windows 开发支持、Linux Dockerfile 和 docker-compose。
@@ -53,7 +61,8 @@ flowchart LR
 核心业务不依赖具体 QQ 或飞书客户端。QQ 被限制在 OneBot 适配器内，飞书命令被限制在
 不经过 shell 的 argv 模板内，因此外部工具升级时不必重写审核、风控和归档逻辑。
 
-更完整的组件、状态机和迭代计划见 [架构文档](docs/ARCHITECTURE.md)。
+更完整的组件、状态机和迭代计划见 [架构文档](docs/ARCHITECTURE.md)，画布操作、连接语义和
+典型拓扑见 [资源编排指南](docs/ORCHESTRATION.md)。
 
 ## 重要边界
 
@@ -79,7 +88,7 @@ src/mua_bot/
   auth.py / gui.py       GUI 认证、会话、配置热加载与管理 API
   web/                   内置中文前端页面、样式和交互
   cli.py                 serve/doctor/手动任务命令
-  config.py              YAML + MUA_* 环境变量配置
+  config.py              YAML + MUA_* 环境变量配置、编排资源与连接模型
   database.py            SQLite schema 和审计仓储
   events.py              OneBot 事件标准化与路由
   runtime.py             工作队列和周期调度
@@ -125,9 +134,23 @@ $env:MUA_QQ__MANAGED_GROUP_IDS = '["123456789"]'
 推荐让真人 QQ 客户端侧车（例如 NapCatQQ）只负责登录和 OneBot 协议，MUA-Bot 不保存 QQ
 密码。
 
-### 多 Bot 与事务分工
+### Bot、群与知识库编排
 
-GUI 的“Bot 编排 / Bot 与事务”页面可以添加多个 QQ Bot 和飞书 Bot。每个 QQ Bot 使用独立的
+GUI 的“资源编排”页面提供类似节点编辑器的工作台。可以在空白画布右键或点击“新建资源”，
+创建 QQ Bot、飞书 Bot、QQ群、飞书群和知识库；拖动节点右侧端口到另一个节点即可建立连接，
+在右侧检查器中可调整连接语义（管理、监听、归档、检索或同步）。画布布局和连接保存在
+`orchestration.resources`、`orchestration.edges` 与 `orchestration.layout`。
+
+旧配置无需手工迁移：`managed_group_ids` 会在第一次打开编排页时自动变成 QQ 群节点和
+`manages` 连接；保存编排时，QQ Bot 到 QQ 群的管理或监听连接会同步回
+`managed_group_ids`，而后端配置模型也会强制保持这个不变量，因此
+现有 Runtime、Webhook 和事务服务仍保持兼容。
+
+新版 GUI 将群归属统一收口到“资源编排”，系统设置中的 QQ 账号页只管理连接、凭据和管理员，
+并显示当前已连接群数量，避免表单和画布同时修改同一关系。配置保存带修订号校验，多标签页或
+多管理员并发修改时会明确提示冲突，不会用旧页面静默覆盖新配置。
+
+每个 QQ Bot 使用独立的
 `onebot_base_url`、Token、Webhook Secret、托管群与管理员列表；反向 Webhook 地址为：
 
 ```text
@@ -158,7 +181,7 @@ QQ Bot 下的事务依赖如下：
 
 Docker 部署过程不要求交互登录。`init-volumes` 会生成并持久化随机 OneBot Token 与 NapCat WebUI
 Token，自动启用 `0.0.0.0:3000` HTTP API，并把反向 HTTP 配置为 MUA-Bot Webhook。NapCat 会在后台
-把当前二维码写入共享缓存卷；容器全部启动后，登录 MUA-Bot GUI，在“Bot 编排”页面点击“扫码登录”
+把当前二维码写入共享缓存卷；容器全部启动后，登录 MUA-Bot GUI，在“资源编排”页面点击“扫码登录”
 即可直接看到二维码。“获取新二维码”会调用 NapCat 刷新 API，而不是重复读取旧图片；页面也会轮询
 NapCat 与 OneBot 两侧状态。6099 端口只作为高级设置入口，所需 Token 可在扫码窗口中一键复制。
 

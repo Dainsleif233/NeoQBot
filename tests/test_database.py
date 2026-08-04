@@ -110,3 +110,54 @@ def test_retention_prunes_messages_but_keeps_announcements(tmp_path: Path) -> No
 
     assert deleted["group_messages"] == 1
     assert database.counts()["announcements"] == 1
+
+
+def test_group_overview_filters_records_by_group_and_bot(tmp_path: Path) -> None:
+    database = Database(tmp_path / "overview.db")
+    database.initialize()
+    sent_at = datetime(2026, 7, 21, 4, 0, tzinfo=UTC)
+    for bot_id, group_id, text in (
+        ("observer", "g1", "keep"),
+        ("worker", "g1", "other bot"),
+        ("observer", "g2", "other group"),
+    ):
+        database.save_message(
+            GroupMessage(
+                bot_id=bot_id,
+                message_id=f"{bot_id}-{group_id}",
+                group_id=group_id,
+                user_id="u1",
+                text=text,
+                sent_at=sent_at,
+            )
+        )
+
+    overview = database.group_overview("g1", bot_ids=["observer"])
+
+    assert overview["counts"]["messages"] == 1
+    assert overview["records"]["messages"][0]["text"] == "keep"
+
+
+def test_recent_records_supports_search_and_offset(tmp_path: Path) -> None:
+    database = Database(tmp_path / "records.db")
+    database.initialize()
+    base = datetime(2026, 7, 21, 4, 0, tzinfo=UTC)
+    for index, text in enumerate(("first message", "needle message", "latest message")):
+        database.save_message(
+            GroupMessage(
+                bot_id="observer",
+                message_id=str(index),
+                group_id="g1",
+                user_id="u1",
+                text=text,
+                sent_at=base + timedelta(seconds=index),
+            )
+        )
+
+    searched = database.recent_records(
+        "messages", 10, bot_id="observer", group_id="g1", search="needle"
+    )
+    second_page = database.recent_records("messages", 1, offset=1)
+
+    assert [record["text"] for record in searched] == ["needle message"]
+    assert [record["text"] for record in second_page] == ["needle message"]

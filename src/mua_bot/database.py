@@ -155,8 +155,7 @@ class Database:
     def _ensure_bot_columns(connection: sqlite3.Connection) -> None:
         for table in ("join_requests", "group_messages", "moderation_runs", "announcements"):
             columns = {
-                row["name"]
-                for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+                row["name"] for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
             }
             if "bot_id" not in columns:
                 connection.execute(
@@ -685,23 +684,113 @@ class Database:
             result.append(item)
         return result
 
-    def recent_records(self, kind: str, limit: int = 50) -> list[dict[str, Any]]:
+    def recent_records(
+        self,
+        kind: str,
+        limit: int = 50,
+        *,
+        group_id: str | None = None,
+        bot_id: str | None = None,
+        search: str | None = None,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        definitions = {
+            "joins": (
+                "join_requests",
+                "received_at",
+                (),
+                ("group_id", "user_id", "comment", "decision", "action_status"),
+            ),
+            "messages": (
+                "group_messages",
+                "sent_at",
+                ("raw_event_json",),
+                ("group_id", "user_id", "text", "message_id"),
+            ),
+            "moderation": (
+                "moderation_runs",
+                "created_at",
+                ("result_json",),
+                ("group_id", "result_json"),
+            ),
+            "announcements": (
+                "announcements",
+                "last_seen_at",
+                ("source_payload_json",),
+                ("group_id", "title", "content", "announcement_id", "sync_status"),
+            ),
+            "audit": (
+                "audit_log",
+                "created_at",
+                ("details_json",),
+                ("action", "status", "subject_type", "subject_id", "details_json"),
+            ),
+        }
+        if kind not in definitions:
+            raise ValueError(f"Unsupported record kind: {kind}")
+        table, order_column, json_columns, search_columns = definitions[kind]
+        conditions: list[str] = []
+        values: list[object] = []
+        if group_id is not None and kind != "audit":
+            conditions.append("group_id = ?")
+            values.append(group_id)
+        if bot_id is not None and kind != "audit":
+            conditions.append("bot_id = ?")
+            values.append(bot_id)
+        if search and search.strip():
+            escaped_search = (
+                search.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            )
+            conditions.append(
+                "(" + " OR ".join(f"{column} LIKE ? ESCAPE '\\'" for column in search_columns) + ")"
+            )
+            values.extend(f"%{escaped_search}%" for _ in search_columns)
+        where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+        values.append(max(1, min(limit, 201)))
+        values.append(max(0, offset))
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM {table}{where} ORDER BY {order_column} DESC LIMIT ? OFFSET ?",
+                tuple(values),
+            ).fetchall()
+        return self._decoded_rows(rows, json_columns)
+
+    def group_overview(
+        self, group_id: str, *, bot_ids: list[str] | None = None, limit: int = 40
+    ) -> dict[str, Any]:
         definitions = {
             "joins": ("join_requests", "received_at", ()),
             "messages": ("group_messages", "sent_at", ("raw_event_json",)),
             "moderation": ("moderation_runs", "created_at", ("result_json",)),
-            "announcements": ("announcements", "last_seen_at", ("source_payload_json",)),
-            "audit": ("audit_log", "created_at", ("details_json",)),
+            "announcements": (
+                "announcements",
+                "last_seen_at",
+                ("source_payload_json",),
+            ),
         }
-        if kind not in definitions:
-            raise ValueError(f"Unsupported record kind: {kind}")
-        table, order_column, json_columns = definitions[kind]
+        counts: dict[str, int] = {}
+        records: dict[str, list[dict[str, Any]]] = {}
+        capped_limit = max(1, min(limit, 100))
         with self._lock, self._connect() as connection:
-            rows = connection.execute(
-                f"SELECT * FROM {table} ORDER BY {order_column} DESC LIMIT ?",
-                (max(1, min(limit, 200)),),
-            ).fetchall()
-        return self._decoded_rows(rows, json_columns)
+            for kind, (table, order_column, json_columns) in definitions.items():
+                conditions = ["group_id = ?"]
+                values: list[object] = [group_id]
+                if bot_ids:
+                    placeholders = ", ".join("?" for _ in bot_ids)
+                    conditions.append(f"bot_id IN ({placeholders})")
+                    values.extend(bot_ids)
+                where = " AND ".join(conditions)
+                counts[kind] = int(
+                    connection.execute(
+                        f"SELECT COUNT(*) FROM {table} WHERE {where}", tuple(values)
+                    ).fetchone()[0]
+                )
+                rows = connection.execute(
+                    f"SELECT * FROM {table} WHERE {where} ORDER BY {order_column} DESC LIMIT ?",
+                    (*values, capped_limit),
+                ).fetchall()
+                records[kind] = self._decoded_rows(rows, json_columns)
+        return {"group_id": group_id, "counts": counts, "records": records}
 
     def counts(self) -> dict[str, int]:
         tables = ["join_requests", "group_messages", "moderation_runs", "announcements"]

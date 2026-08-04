@@ -130,3 +130,106 @@ def test_record_only_enables_message_task_without_analysis() -> None:
     assert task.record_only is True
     assert task.polling_detection is False
     assert task.analyze is False
+
+
+def test_orchestration_accepts_many_to_many_group_links() -> None:
+    settings = Settings.model_validate(
+        {
+            "qq": {
+                "bots": [
+                    {"id": "observer", "managed_group_ids": ["legacy"]},
+                    {"id": "worker", "managed_group_ids": ["legacy"]},
+                ]
+            },
+            "orchestration": {
+                "resources": [
+                    {
+                        "id": "group-one",
+                        "kind": "qq_group",
+                        "name": "群一",
+                        "external_id": "g1",
+                    },
+                    {
+                        "id": "group-two",
+                        "kind": "qq_group",
+                        "name": "群二",
+                        "external_id": "g2",
+                    },
+                    {"id": "handbook", "kind": "knowledge_base", "name": "管理手册"},
+                ],
+                "edges": [
+                    {
+                        "id": "observer-g1",
+                        "source": "qq-bot:observer",
+                        "target": "group-one",
+                    },
+                    {
+                        "id": "worker-g1",
+                        "source": "qq-bot:worker",
+                        "target": "group-one",
+                    },
+                    {
+                        "id": "worker-g2",
+                        "source": "qq-bot:worker",
+                        "target": "group-two",
+                        "relation": "observes",
+                    },
+                    {
+                        "id": "g1-handbook",
+                        "source": "group-one",
+                        "target": "handbook",
+                        "relation": "archives_to",
+                    },
+                ],
+            },
+        }
+    )
+
+    assert len(settings.orchestration.resources) == 3
+    assert len(settings.orchestration.edges) == 4
+    assert settings.qq_bot("observer").managed_group_ids == ["g1"]
+    assert settings.qq_bot("worker").managed_group_ids == ["g1", "g2"]
+
+
+def test_orchestration_rejects_unknown_endpoint() -> None:
+    try:
+        Settings.model_validate(
+            {
+                "orchestration": {
+                    "resources": [],
+                    "edges": [{"id": "broken", "source": "qq-bot:default", "target": "missing"}],
+                }
+            }
+        )
+    except ValueError as exc:
+        assert "未知节点" in str(exc)
+    else:
+        raise AssertionError("unknown orchestration endpoints must be rejected")
+
+
+def test_orchestration_rejects_duplicate_platform_resource() -> None:
+    try:
+        Settings.model_validate(
+            {
+                "orchestration": {
+                    "resources": [
+                        {
+                            "id": "group-one",
+                            "kind": "qq_group",
+                            "name": "群一",
+                            "external_id": "123",
+                        },
+                        {
+                            "id": "group-copy",
+                            "kind": "qq_group",
+                            "name": "群一副本",
+                            "external_id": "123",
+                        },
+                    ]
+                }
+            }
+        )
+    except ValueError as exc:
+        assert "重复的平台标识" in str(exc)
+    else:
+        raise AssertionError("duplicate orchestration resources must be rejected")

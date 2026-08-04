@@ -3,6 +3,7 @@ from __future__ import annotations
 # ruff: noqa: B008 - FastAPI dependency injection intentionally uses Depends in defaults.
 import asyncio
 import hashlib
+import json
 import os
 import secrets
 import time
@@ -33,6 +34,7 @@ class PasswordPayload(BaseModel):
 
 class SettingsPayload(BaseModel):
     config: dict[str, Any]
+    revision: str = Field(default="", max_length=64)
 
 
 class LoginThrottle:
@@ -50,6 +52,16 @@ class LoginThrottle:
 
     def clear(self, address: str) -> None:
         self._failures.pop(address, None)
+
+
+def _settings_revision(settings: Settings) -> str:
+    payload = json.dumps(
+        settings.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _preserve_masked_secrets(candidate: dict[str, Any], current: Settings) -> dict[str, Any]:
@@ -244,6 +256,12 @@ def register_gui(
         _: GuiSession = Depends(ready_admin),
     ) -> dict[str, Any]:
         settings = get_settings()
+        connected_resources = {
+            endpoint
+            for edge in settings.orchestration.edges
+            if edge.enabled
+            for endpoint in (edge.source, edge.target)
+        }
         return {
             "version": __version__,
             "environment": settings.app.environment,
@@ -252,6 +270,25 @@ def register_gui(
             "counts": get_container().database.counts(),
             "diagnostics": settings.diagnostics(),
             "managed_groups": settings.managed_group_ids(),
+            "orchestration": {
+                "resources": len(settings.orchestration.resources),
+                "edges": sum(1 for edge in settings.orchestration.edges if edge.enabled),
+                "groups": sum(
+                    1
+                    for resource in settings.orchestration.resources
+                    if resource.kind in {"qq_group", "feishu_group"}
+                ),
+                "knowledge_bases": sum(
+                    1
+                    for resource in settings.orchestration.resources
+                    if resource.kind == "knowledge_base"
+                ),
+                "disconnected": sum(
+                    1
+                    for resource in settings.orchestration.resources
+                    if resource.enabled and resource.id not in connected_resources
+                ),
+            },
             "bots": [
                 {
                     "id": bot.id,
@@ -268,14 +305,34 @@ def register_gui(
     async def gui_settings(
         _: GuiSession = Depends(ready_admin),
     ) -> dict[str, Any]:
-        return {"config": get_settings().redacted_dict()}
+        settings = get_settings()
+        return {
+            "config": settings.redacted_dict(),
+            "revision": _settings_revision(settings),
+        }
 
     @app.put("/api/gui/settings")
     async def gui_save_settings(
         payload: SettingsPayload,
-        _: GuiSession = Depends(ready_admin_csrf),
+        session: GuiSession = Depends(ready_admin_csrf),
     ) -> dict[str, Any]:
         current = get_settings()
+        current_revision = _settings_revision(current)
+        if payload.revision and not secrets.compare_digest(payload.revision, current_revision):
+            get_container().database.audit(
+                "gui_settings",
+                "conflict",
+                "admin_user",
+                session.username,
+                {
+                    "submitted_revision": payload.revision[:12],
+                    "current_revision": current_revision[:12],
+                },
+            )
+            raise HTTPException(
+                status_code=409,
+                detail="配置已被其他会话更新，请刷新后重新应用更改",
+            )
         try:
             merged = _preserve_masked_secrets(payload.config, current)
             updated = Settings.model_validate(merged)
@@ -296,6 +353,7 @@ def register_gui(
             "ok": True,
             "restart_required": restart_required,
             "diagnostics": updated.diagnostics(),
+            "revision": _settings_revision(updated),
         }
 
     @app.get("/api/gui/records/{kind}")
@@ -303,12 +361,84 @@ def register_gui(
         kind: str,
         _: GuiSession = Depends(ready_admin),
         limit: int = Query(default=50, ge=1, le=200),
+        group_id: str | None = Query(default=None, min_length=1, max_length=160),
+        bot_id: str | None = Query(default=None, min_length=1, max_length=64),
+        search: str | None = Query(default=None, max_length=120),
+        offset: int = Query(default=0, ge=0, le=100000),
     ) -> dict[str, Any]:
         try:
-            records = get_container().database.recent_records(kind, limit)
+            records = get_container().database.recent_records(
+                kind,
+                limit + 1,
+                group_id=group_id,
+                bot_id=bot_id,
+                search=search,
+                offset=offset,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return {"kind": kind, "records": records}
+        return {
+            "kind": kind,
+            "records": records[:limit],
+            "limit": limit,
+            "offset": offset,
+            "has_more": len(records) > limit,
+        }
+
+    @app.get("/api/gui/orchestration/group")
+    async def gui_orchestration_group(
+        _: GuiSession = Depends(ready_admin),
+        group_id: str = Query(min_length=1, max_length=160),
+        resource_id: str | None = Query(default=None, max_length=64),
+        limit: int = Query(default=30, ge=1, le=100),
+    ) -> dict[str, Any]:
+        settings = get_settings()
+        resource = next(
+            (
+                item
+                for item in settings.orchestration.resources
+                if item.kind in {"qq_group", "feishu_group"}
+                and (
+                    (resource_id and item.id == resource_id)
+                    or (item.external_id and item.external_id == group_id)
+                )
+            ),
+            None,
+        )
+        manager_ids = {
+            bot.id for bot in settings.effective_qq_bots() if group_id in bot.managed_group_ids
+        }
+        if resource is not None:
+            manager_ids.update(
+                edge.source.removeprefix("qq-bot:")
+                for edge in settings.orchestration.edges
+                if edge.enabled
+                and edge.target == resource.id
+                and edge.relation in {"manages", "observes"}
+                and edge.source.startswith("qq-bot:")
+            )
+        managers = [
+            {
+                "id": bot.id,
+                "name": bot.name,
+                "enabled": bot.enabled,
+                "tasks": bot.tasks.model_dump(mode="json"),
+            }
+            for bot in settings.effective_qq_bots()
+            if bot.id in manager_ids
+        ]
+        overview = await asyncio.to_thread(
+            get_container().database.group_overview,
+            group_id,
+            bot_ids=sorted(manager_ids) or None,
+            limit=limit,
+        )
+        return {
+            "resource": resource.model_dump(mode="json") if resource else None,
+            "group_id": group_id,
+            "managers": managers,
+            **overview,
+        }
 
     @app.post("/api/gui/jobs/{job}")
     async def gui_run_job(
@@ -496,7 +626,7 @@ def register_gui(
                     "webhook_url": f"/webhooks/onebot/{bot.id}",
                     "webui_public_url": bot.webui_public_url,
                     "webui_public_port": bot.webui_public_port,
-                    "qrcode_available": Path(bot.qrcode_path).is_file(),
+                    "qrcode_available": await asyncio.to_thread(Path(bot.qrcode_path).is_file),
                     "webui_token_available": webui_token_available,
                     "tasks": bot.tasks.model_dump(mode="json"),
                 }

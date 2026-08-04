@@ -12,6 +12,7 @@ MUA-Bot 把易变化的 IM/CLI 接口与稳定的治理流程分离。外部平�
 |---|---|---|
 | FastAPI Webhook | 校验 HMAC、限制大小、接收 OneBot 事件 | 拒绝非法请求；队列满返回 503 |
 | GUI | 6688 端口管理后台、配置热加载、平台登录和数据浏览 | 首次登录强制改密 |
+| 编排工作台 | 管理 Bot、群、知识库节点、连接关系与画布布局 | 旧托管群配置自动映射为节点和连接 |
 | EventHandler | 标准化申请、群消息和管理员私聊 | 未知事件忽略 |
 | JoinApprovalService | 幂等申请、模型审核、阈值与动作状态机 | 转人工并审计 |
 | ModerationService | 保存消息、读取固定窗口、风险告警 | 记录失败，不处罚成员 |
@@ -70,6 +71,23 @@ stateDiagram-v2
 - `audit_log`：关键动作、状态、主体和结构化详情。
 - `admin_users`：GUI 管理员 PBKDF2 密码哈希和强制改密状态；
 - `gui_sessions`：随机会话 token 的 SHA-256 摘要、CSRF token 与过期时间。
+
+## 资源编排模型
+
+资源编排属于声明式配置层，不绕过现有运行时安全边界：
+
+- Bot 节点来自 `qq.bots` 与 `feishu.bots`，节点 ID 分别为 `qq-bot:<id>` 和
+  `feishu-bot:<id>`；
+- 群和知识库保存在 `orchestration.resources`，当前资源类型为 `qq_group`、
+  `feishu_group` 和 `knowledge_base`；
+- 多对多连接保存在 `orchestration.edges`，可表达管理、监听、归档、检索和同步；
+- 节点坐标保存在 `orchestration.layout`，不影响 Runtime 行为；
+- 只要配置中存在 QQ 群资源，后端模型就会把 QQ Bot 的 `manages` / `observes` 连接强制
+  同步回 `managed_group_ids`；画布、YAML 与 API 因而共享同一不变量，业务服务继续使用原有
+  配置接口，避免一次性重写稳定的事件处理链路；
+- GUI 读取配置时获得基于完整有效配置生成的 SHA-256 修订号，保存时使用乐观并发校验；
+  如果其他会话已修改配置，旧页面收到 409 而不会静默覆盖新设置；
+- 群详情通过受 GUI 会话保护的只读接口聚合 SQLite 中的消息、公告、分析和申请记录。
 
 ## 安全模型
 

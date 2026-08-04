@@ -214,6 +214,62 @@ class FeishuConfig(FeishuConnectionConfig):
         return self
 
 
+class OrchestrationPosition(BaseModel):
+    x: float = Field(default=80, ge=-10000, le=10000)
+    y: float = Field(default=80, ge=-10000, le=10000)
+
+
+class OrchestrationResourceConfig(BaseModel):
+    id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    kind: Literal["qq_group", "feishu_group", "knowledge_base"]
+    name: str = Field(min_length=1, max_length=80)
+    external_id: str = Field(default="", max_length=160)
+    description: str = Field(default="", max_length=1000)
+    enabled: bool = True
+    metadata: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("name", "external_id", "description", mode="before")
+    @classmethod
+    def strip_text(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+
+class OrchestrationEdgeConfig(BaseModel):
+    id: str = Field(min_length=1, max_length=96, pattern=r"^[A-Za-z0-9_-]+$")
+    source: str = Field(min_length=1, max_length=96)
+    target: str = Field(min_length=1, max_length=96)
+    relation: Literal["manages", "observes", "archives_to", "searches", "syncs"] = "manages"
+    enabled: bool = True
+
+
+class OrchestrationConfig(BaseModel):
+    resources: list[OrchestrationResourceConfig] = Field(default_factory=list)
+    edges: list[OrchestrationEdgeConfig] = Field(default_factory=list)
+    layout: dict[str, OrchestrationPosition] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def unique_identifiers(self) -> OrchestrationConfig:
+        resource_ids = [resource.id for resource in self.resources]
+        if len(resource_ids) != len(set(resource_ids)):
+            raise ValueError("orchestration.resources 中的 id 必须唯一")
+        external_resources = [
+            (resource.kind, resource.external_id)
+            for resource in self.resources
+            if resource.external_id
+        ]
+        if len(external_resources) != len(set(external_resources)):
+            raise ValueError("同一类型的编排资源不能使用重复的平台标识")
+        edge_ids = [edge.id for edge in self.edges]
+        if len(edge_ids) != len(set(edge_ids)):
+            raise ValueError("orchestration.edges 中的 id 必须唯一")
+        connections = [
+            (edge.source, edge.target, edge.relation) for edge in self.edges if edge.enabled
+        ]
+        if len(connections) != len(set(connections)):
+            raise ValueError("编排连接不能重复")
+        return self
+
+
 class RuntimeConfig(BaseModel):
     event_workers: int = Field(default=2, ge=1, le=32)
     shutdown_grace_seconds: float = Field(default=15.0, ge=0.1, le=300)
@@ -250,9 +306,42 @@ class Settings(BaseSettings):
     moderation: ModerationConfig = Field(default_factory=ModerationConfig)
     announcements: AnnouncementConfig = Field(default_factory=AnnouncementConfig)
     feishu: FeishuConfig = Field(default_factory=FeishuConfig)
+    orchestration: OrchestrationConfig = Field(default_factory=OrchestrationConfig)
     runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
     retention: RetentionConfig = Field(default_factory=RetentionConfig)
     gui: GuiConfig = Field(default_factory=GuiConfig)
+
+    @model_validator(mode="after")
+    def validate_orchestration(self) -> Settings:
+        resource_ids = {resource.id for resource in self.orchestration.resources}
+        bot_node_ids = {f"qq-bot:{bot.id}" for bot in self.effective_qq_bots()} | {
+            f"feishu-bot:{bot.id}" for bot in self.effective_feishu_bots()
+        }
+        valid_node_ids = resource_ids | bot_node_ids
+        for edge in self.orchestration.edges:
+            if edge.source == edge.target:
+                raise ValueError(f"编排连接 {edge.id} 不能连接节点自身")
+            if edge.source not in valid_node_ids or edge.target not in valid_node_ids:
+                raise ValueError(f"编排连接 {edge.id} 指向未知节点")
+        qq_groups = {
+            resource.id: resource.external_id
+            for resource in self.orchestration.resources
+            if resource.kind == "qq_group" and resource.enabled and resource.external_id
+        }
+        if qq_groups and self.qq.bots:
+            for bot in self.qq.bots:
+                source = f"qq-bot:{bot.id}"
+                bot.managed_group_ids = sorted(
+                    {
+                        qq_groups[edge.target]
+                        for edge in self.orchestration.edges
+                        if edge.enabled
+                        and edge.source == source
+                        and edge.target in qq_groups
+                        and edge.relation in {"manages", "observes"}
+                    }
+                )
+        return self
 
     def effective_qq_bots(self) -> list[QQBotConfig]:
         if self.qq.bots:
@@ -438,9 +527,7 @@ class Settings(BaseSettings):
             if not bot.enabled:
                 continue
             prefix = "feishu" if not self.feishu.bots else f"feishu.bots.{bot.id}"
-            if bot.id in archive_targets and not bot.command_templates.get(
-                "archive_announcement"
-            ):
+            if bot.id in archive_targets and not bot.command_templates.get("archive_announcement"):
                 errors.append(f"{prefix}.command_templates.archive_announcement 未配置")
             if bot.id in search_targets and not bot.command_templates.get("search"):
                 errors.append(f"{prefix}.command_templates.search 未配置")
@@ -465,6 +552,15 @@ class Settings(BaseSettings):
             warnings.append("GUI 仍配置默认初始凭据，首次登录后必须修改密码")
         if not self.gui.secure_cookie:
             warnings.append("gui.secure_cookie=false，仅适合 HTTP 联调或由可信反向代理提供 HTTPS")
+        connected_resources = {
+            endpoint
+            for edge in self.orchestration.edges
+            if edge.enabled
+            for endpoint in (edge.source, edge.target)
+        }
+        for resource in self.orchestration.resources:
+            if resource.enabled and resource.id not in connected_resources:
+                warnings.append(f"编排资源 {resource.name} 尚未连接到任何 Bot 或资源")
         return {"errors": errors, "warnings": warnings}
 
     def save(self, path: str | Path) -> None:

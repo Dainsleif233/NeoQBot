@@ -160,6 +160,13 @@ feishu:
   # bots 非空时优先于上面的单账号字段。
   bots: []
 
+orchestration:
+  # GUI 会把旧 managed_group_ids 自动迁移成群节点和 manages 连接。
+  # 资源支持 qq_group、feishu_group、knowledge_base；画布坐标保存在 layout。
+  resources: []
+  edges: []
+  layout: {}
+
 runtime:
   event_workers: 2
   shutdown_grace_seconds: 15
