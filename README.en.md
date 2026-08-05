@@ -127,10 +127,10 @@ interface by default and is available at <http://127.0.0.1:6688/gui/>. Do not pu
 `6099`, or `6000` directly to the Internet. Use a VPN, an SSH tunnel, or an access-controlled HTTPS
 reverse proxy for remote administration.
 
-On the first start, Compose creates the persistent configuration from the tracked
-`config.example.yaml`. To customize it before deployment, copy it to `config.yaml` and set
-`NEOQBOT_BOOTSTRAP_CONFIG_PATH=./config.yaml` in `.env`. The selected path must be a regular file.
-Git-based deployment platforms do not need an untracked `config.yaml` by default.
+On the first start, Compose creates the persistent configuration from `config.example.yaml` embedded
+in the image. No host bind mount is required, so Git-based platforms and remote Docker daemons work
+without an untracked `config.yaml`. Apply deployment-specific overrides through `.env` or platform
+environment variables, and never bake secrets into the image.
 
 Useful checks:
 

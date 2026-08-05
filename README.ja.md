@@ -122,10 +122,10 @@ docker compose exec neoqbot sh -c 'cat /app/data/secrets/gui-bootstrap-password'
 `6099`、`6000` をインターネットへ直接公開しないでください。リモート管理には VPN、SSH
 トンネル、またはアクセス制御付き HTTPS リバースプロキシを使用してください。
 
-初回起動時、Compose はリポジトリ内の `config.example.yaml` から永続設定を作成します。事前に
-変更する場合は `config.yaml` へコピーし、`.env` に
-`NEOQBOT_BOOTSTRAP_CONFIG_PATH=./config.yaml` を設定してください。指定先は通常ファイルである
-必要があります。Git ベースのデプロイ環境では、未追跡の `config.yaml` は既定で不要です。
+初回起動時、Compose はイメージ内に組み込まれた `config.example.yaml` から永続設定を作成します。
+ホストの bind mount を使用しないため、Git ベースの環境やリモート Docker daemon でも未追跡の
+`config.yaml` は不要です。環境固有の値は `.env` またはプラットフォーム環境変数で上書きし、
+Secret をイメージやリポジトリへ含めないでください。
 
 ```bash
 docker compose ps

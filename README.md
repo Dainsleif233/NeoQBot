@@ -117,9 +117,9 @@ docker compose exec neoqbot sh -c 'cat /app/data/secrets/gui-bootstrap-password'
 飞书用户目录。不要把 `6688`、`6099` 或 `6000` 直接映射到公网；远程管理优先使用 VPN、SSH
 隧道，或带访问控制的 HTTPS 反向代理。
 
-Compose 首次启动默认使用仓库内的 `config.example.yaml` 创建持久化配置。需要预先自定义时，复制
-为 `config.yaml`，并在 `.env` 中设置 `NEOQBOT_BOOTSTRAP_CONFIG_PATH=./config.yaml`；该路径必须
-指向真实文件，不能是目录。GitHub 拉取式部署无需创建未纳入仓库的 `config.yaml`。
+Compose 首次启动使用镜像内置的 `config.example.yaml` 创建持久化配置，不依赖宿主机 bind mount，
+适用于 GitHub 拉取式部署和远程 Docker daemon。部署差异优先通过 `.env` 或平台环境变量覆盖；
+Secret 不应写入镜像或仓库。
 
 常用检查：
 

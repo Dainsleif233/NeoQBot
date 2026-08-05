@@ -22,6 +22,7 @@ RUN if [ "$INSTALL_FEISHU_CLI" = "true" ]; then \
 COPY pyproject.toml README.md LICENSE ./
 COPY src ./src
 RUN pip install . && useradd --create-home --uid 10001 neoqbot && mkdir -p /app/data && chown -R neoqbot:neoqbot /app
+COPY --chown=10001:10001 config.example.yaml /app/config.example.yaml
 
 USER 10001:10001
 EXPOSE 8080

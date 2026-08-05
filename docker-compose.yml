@@ -11,13 +11,12 @@ services:
       - -ec
       - |
         umask 077
-        if [ ! -f /bootstrap/config.yaml ]; then
-          echo "NeoQBot bootstrap configuration is missing or is not a regular file: /bootstrap/config.yaml" >&2
-          echo "Set NEOQBOT_BOOTSTRAP_CONFIG_PATH to an existing YAML file." >&2
+        if [ ! -f /app/config.example.yaml ]; then
+          echo "NeoQBot image is missing /app/config.example.yaml; rebuild the image from the complete repository." >&2
           exit 66
         fi
         if [ ! -f /mnt/neoqbot-data/config.yaml ]; then
-          cp /bootstrap/config.yaml /mnt/neoqbot-data/config.yaml
+          cp /app/config.example.yaml /mnt/neoqbot-data/config.yaml
         fi
         neoqbot init-napcat \
           --napcat-config-dir /mnt/napcat-config \
@@ -28,7 +27,6 @@ services:
         chmod 700 /mnt/neoqbot-data /mnt/feishu-home /mnt/napcat-config /mnt/qq-session
         chmod 755 /mnt/napcat-cache
     volumes:
-      - "${NEOQBOT_BOOTSTRAP_CONFIG_PATH:-./config.example.yaml}:/bootstrap/config.yaml:ro"
       - neoqbot-data:/mnt/neoqbot-data
       - neoqbot-feishu-home:/mnt/feishu-home
       - neoqbot-napcat-config:/mnt/napcat-config
