@@ -27,6 +27,7 @@ class GuiSession:
     username: str
     csrf_token: str
     must_change_password: bool
+    role: str
     token_hash: str
 
 
@@ -37,6 +38,8 @@ class GuiAuth:
 
     def ensure_bootstrap_admin(self) -> bool:
         existing = self.database.get_admin_user(self.config.bootstrap_username)
+        if existing:
+            self.database.promote_gui_user(self.config.bootstrap_username)
         if existing and not bool(existing["must_change_password"]):
             return False
         password = resolve_secret(
@@ -87,6 +90,7 @@ class GuiAuth:
             username=username,
             csrf_token=csrf,
             must_change_password=bool(user["must_change_password"]),
+            role=str(user.get("role") or "operator"),
             token_hash=token_digest,
         )
 
@@ -101,7 +105,41 @@ class GuiAuth:
             username=str(row["username"]),
             csrf_token=str(row["csrf_token"]),
             must_change_password=bool(row["must_change_password"]),
+            role=str(row["role"]),
             token_hash=token_digest,
+        )
+
+    @staticmethod
+    def _validate_new_password(username: str, password: str) -> None:
+        if len(password) < 14:
+            raise ValueError("密码至少需要 14 个字符")
+        if username.casefold() in password.casefold():
+            raise ValueError("密码不能包含用户名")
+        if password.casefold() in {
+            "password123456",
+            "administrator123",
+            "admin123456789",
+        }:
+            raise ValueError("密码过于常见，请使用随机生成的长密码")
+
+    def create_operator(self, username: str, password: str) -> bool:
+        self._validate_new_password(username, password)
+        salt = secrets.token_bytes(16)
+        return self.database.create_gui_user(
+            username,
+            _hash_password(password, salt, PBKDF2_ITERATIONS),
+            base64.b64encode(salt).decode("ascii"),
+            PBKDF2_ITERATIONS,
+        )
+
+    def reset_operator_password(self, username: str, password: str) -> bool:
+        self._validate_new_password(username, password)
+        salt = secrets.token_bytes(16)
+        return self.database.reset_gui_user_password(
+            username,
+            _hash_password(password, salt, PBKDF2_ITERATIONS),
+            base64.b64encode(salt).decode("ascii"),
+            PBKDF2_ITERATIONS,
         )
 
     def logout(self, token: str | None) -> None:
@@ -111,16 +149,7 @@ class GuiAuth:
     def change_password(
         self, session: GuiSession, current_password: str, new_password: str
     ) -> bool:
-        if len(new_password) < 14:
-            raise ValueError("新密码至少需要 14 个字符")
-        if session.username.casefold() in new_password.casefold():
-            raise ValueError("新密码不能包含管理员用户名")
-        if new_password.casefold() in {
-            "password123456",
-            "administrator123",
-            "admin123456789",
-        }:
-            raise ValueError("新密码过于常见，请使用随机生成的长密码")
+        self._validate_new_password(session.username, new_password)
         user = self.database.get_admin_user(session.username)
         if not user:
             return False

@@ -4,6 +4,7 @@
   var state = {
     csrf: "",
     username: "",
+    role: "operator",
     activeView: "dashboard",
     config: null,
     settingsRevision: "",
@@ -97,6 +98,12 @@
     ["login-view", "password-view", "app-view"].forEach(function (id) { $(id).classList.add("hidden"); });
   }
 
+  function applySession(session) {
+    state.csrf = session.csrf_token;
+    state.username = session.username;
+    state.role = session.role || "operator";
+  }
+
   function showLogin() {
     state.csrf = "";
     hideAllRoots();
@@ -114,6 +121,9 @@
     hideAllRoots();
     $("app-view").classList.remove("hidden");
     $("current-user").textContent = state.username;
+    $("current-user-avatar").textContent = (state.username.charAt(0) || "U").toUpperCase();
+    $("current-user-role").textContent = state.role === "admin" ? "管理员" : "子用户";
+    $("users-nav").classList.toggle("hidden", state.role !== "admin");
     await loadDashboard();
   }
 
@@ -121,8 +131,7 @@
     initializeTheme();
     try {
       var session = await api("/api/gui/auth/session");
-      state.csrf = session.csrf_token;
-      state.username = session.username;
+      applySession(session);
       if (session.must_change_password) showPasswordChange();
       else await showApp();
     } catch (_) {
@@ -139,8 +148,7 @@
         method: "POST",
         body: { username: $("login-username").value.trim(), password: $("login-password").value }
       });
-      state.csrf = result.csrf_token;
-      state.username = result.username;
+      applySession(result);
       $("login-password").value = "";
       if (result.must_change_password) showPasswordChange();
       else await showApp();
@@ -167,8 +175,7 @@
         body: { current_password: current, new_password: password }
       });
       var session = await api("/api/gui/auth/session");
-      state.csrf = session.csrf_token;
-      state.username = session.username;
+      applySession(session);
       $("password-form").reset();
       showToast("密码已更新");
       await showApp();
@@ -192,10 +199,15 @@
     dashboard: ["Overview", "运行概览"],
     integrations: ["Orchestration", "资源编排"],
     settings: ["Configuration", "系统设置"],
-    records: ["Audit trail", "记录与审计"]
+    records: ["Audit trail", "记录与审计"],
+    users: ["Access control", "用户管理"]
   };
 
   async function switchView(name) {
+    if (name === "users" && state.role !== "admin") {
+      showToast("只有管理员可以管理平台用户", true);
+      return;
+    }
     if (state.activeView === "integrations" && name !== "integrations" && state.orchestrationDirty) {
       if (!window.confirm("编排还有未保存的更改，离开后将丢失。仍要离开吗？")) return;
       state.orchestrationDirty = false;
@@ -216,6 +228,7 @@
       if (name === "integrations") await loadOrchestration();
       if (name === "settings") await loadSettings();
       if (name === "records") await loadRecords();
+      if (name === "users") await loadUsers();
     } catch (error) {
       showToast(error.message, true);
     }
@@ -1927,6 +1940,151 @@
     loadRecords(false).catch(function (error) { showToast(error.message, true); });
   });
 
+  function userTimestamp(value) {
+    var date = new Date(value);
+    return Number.isNaN(date.getTime()) ? "未知" : date.toLocaleString("zh-CN", { hour12: false });
+  }
+
+  function userAction(label, className, action) {
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "button " + className;
+    button.textContent = label;
+    button.addEventListener("click", action);
+    return button;
+  }
+
+  function openUserPasswordDialog(username) {
+    $("user-password-target").value = username;
+    $("user-password-name").textContent = username;
+    $("user-password-form").reset();
+    $("user-password-target").value = username;
+    $("user-password-dialog").showModal();
+    window.setTimeout(function () { $("user-reset-password").focus(); }, 30);
+  }
+
+  function closeUserPasswordDialog() {
+    if ($("user-password-dialog").open) $("user-password-dialog").close();
+  }
+
+  function renderUsers(users) {
+    var target = $("user-list");
+    target.replaceChildren();
+    users.forEach(function (user) {
+      var card = document.createElement("article");
+      card.className = "user-card";
+
+      var identity = document.createElement("div");
+      identity.className = "user-card-identity";
+      var avatar = document.createElement("span");
+      avatar.className = "avatar user-card-avatar";
+      avatar.textContent = (user.username.charAt(0) || "U").toUpperCase();
+      var identityText = document.createElement("div");
+      var name = document.createElement("strong");
+      name.textContent = user.username;
+      var role = document.createElement("small");
+      role.textContent = user.role === "admin" ? "管理员 · 完整权限" : "子用户 · Bot 管理权限";
+      identityText.append(name, role);
+      identity.append(avatar, identityText);
+
+      var status = document.createElement("div");
+      status.className = "user-card-status";
+      var passwordState = document.createElement("span");
+      passwordState.className = "pill" + (user.must_change_password ? " attention" : "");
+      passwordState.textContent = user.must_change_password ? "等待首次改密" : "密码已设置";
+      var sessions = document.createElement("small");
+      sessions.textContent = user.active_sessions + " 个活动会话 · 更新于 " + userTimestamp(user.updated_at);
+      status.append(passwordState, sessions);
+
+      var actions = document.createElement("div");
+      actions.className = "button-row user-card-actions";
+      if (user.role === "operator") {
+        actions.append(
+          userAction("重置密码", "secondary compact", function () { openUserPasswordDialog(user.username); }),
+          userAction("删除", "danger compact", async function () {
+            if (!window.confirm("删除子用户 “" + user.username + "”？其所有登录会话会立即失效。")) return;
+            try {
+              await api("/api/gui/users/" + encodeURIComponent(user.username), { method: "DELETE" });
+              showToast("已删除子用户 " + user.username);
+              await loadUsers();
+            } catch (error) {
+              showToast(error.message, true);
+            }
+          })
+        );
+      } else {
+        var protectedLabel = document.createElement("span");
+        protectedLabel.className = "protected-user-label";
+        protectedLabel.textContent = "受保护账号";
+        actions.appendChild(protectedLabel);
+      }
+
+      card.append(identity, status, actions);
+      target.appendChild(card);
+    });
+  }
+
+  async function loadUsers() {
+    var data = await api("/api/gui/users");
+    renderUsers(data.users || []);
+  }
+
+  $("user-create-form").addEventListener("submit", async function (event) {
+    event.preventDefault();
+    var password = $("user-create-password").value;
+    if (password !== $("user-create-confirm").value) {
+      showToast("两次输入的初始密码不一致", true);
+      return;
+    }
+    var button = event.submitter;
+    button.disabled = true;
+    try {
+      var username = $("user-create-username").value.trim();
+      await api("/api/gui/users", { method: "POST", body: { username: username, password: password } });
+      $("user-create-form").reset();
+      showToast("子用户 " + username + " 已创建");
+      await loadUsers();
+    } catch (error) {
+      showToast(error.message, true);
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  $("users-refresh").addEventListener("click", function () {
+    loadUsers().catch(function (error) { showToast(error.message, true); });
+  });
+  $("user-password-close").addEventListener("click", closeUserPasswordDialog);
+  $("user-password-cancel").addEventListener("click", closeUserPasswordDialog);
+  $("user-password-dialog").addEventListener("cancel", function (event) {
+    event.preventDefault();
+    closeUserPasswordDialog();
+  });
+  $("user-password-form").addEventListener("submit", async function (event) {
+    event.preventDefault();
+    var username = $("user-password-target").value;
+    var password = $("user-reset-password").value;
+    if (password !== $("user-reset-confirm").value) {
+      showToast("两次输入的新密码不一致", true);
+      return;
+    }
+    var button = event.submitter;
+    button.disabled = true;
+    try {
+      await api("/api/gui/users/" + encodeURIComponent(username) + "/password", {
+        method: "PUT",
+        body: { password: password }
+      });
+      closeUserPasswordDialog();
+      showToast("已重置 " + username + " 的密码");
+      await loadUsers();
+    } catch (error) {
+      showToast(error.message, true);
+    } finally {
+      button.disabled = false;
+    }
+  });
+
   async function commandCreateResource(kind) {
     await switchView("integrations");
     if (state.activeView !== "integrations") return;
@@ -1944,7 +2102,7 @@
   }
 
   function commandDefinitions() {
-    return [
+    var commands = [
       { label: "打开运行概览", detail: "查看计数、诊断和手动任务", category: "导航", action: function () { return switchView("dashboard"); } },
       { label: "打开资源编排", detail: "管理 Bot、群、知识库和连接", category: "导航", action: function () { return switchView("integrations"); } },
       { label: "打开系统设置", detail: "连接、事务、模型和保留策略", category: "导航", action: function () { return switchView("settings"); } },
@@ -1960,6 +2118,15 @@
       { label: "切换深浅主题", detail: "在纯黑和纯白工作台之间切换", category: "界面", action: function () { applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark"); } },
       { label: "刷新当前页面", detail: "重新读取当前页面的最新状态", category: "界面", action: function () { return switchView(state.activeView); } }
     ];
+    if (state.role === "admin") {
+      commands.splice(4, 0, {
+        label: "打开用户管理",
+        detail: "创建、重置或删除平台子用户",
+        category: "导航",
+        action: function () { return switchView("users"); }
+      });
+    }
+    return commands;
   }
 
   function filteredCommands() {

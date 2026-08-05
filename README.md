@@ -101,6 +101,8 @@ uv run neoqbot --config config.yaml serve
 
 打开 <http://127.0.0.1:8080/gui/>。初始账号为 `admin`，密码从
 `data/secrets/gui-bootstrap-password` 读取；首次登录必须修改密码。请勿把该文件提交到仓库。
+管理员可在“用户管理”中创建子用户并设置初始密码。子用户首次登录后同样必须修改密码，可以共同
+管理 Bot、群、知识库和平台设置，但不能创建、重置或删除其他用户。
 
 ## Docker 部署
 
@@ -112,11 +114,11 @@ docker compose logs -f neoqbot
 docker compose exec neoqbot sh -c 'cat /app/data/secrets/gui-bootstrap-password'
 ```
 
-最后一条命令输出随机初始密码。默认管理端只绑定宿主机回环地址，访问地址为
-<http://127.0.0.1:6688/gui/>。Compose 同时准备持久化数据、NapCat 配置、QQ 登录态、二维码缓存和
-飞书用户目录。NapCat 的 `6099` 和 OneBot 的 `3000` 默认仅存在于 Compose 内部网络，不再占用
-宿主机端口。不要把它们额外映射到公网；远程管理优先使用 VPN、SSH 隧道，或带访问控制的 HTTPS
-反向代理。
+最后一条命令输出随机初始密码。Compose 默认将管理端发布到 `0.0.0.0:6688`，可通过服务器 IP
+访问。公网裸 HTTP 会明文传输登录凭据，必须先限制防火墙来源并尽快接入 HTTPS；不需要公网访问时，
+在 `.env` 设置 `NEOQBOT_GUI_BIND_IP=127.0.0.1`。Compose 同时准备持久化数据、NapCat 配置、QQ
+登录态、二维码缓存和飞书用户目录。NapCat 的 `6099` 和 OneBot 的 `3000` 默认仅存在于 Compose
+内部网络，不要把它们额外映射到公网。
 
 Compose 首次启动使用镜像内置的 `config.example.yaml` 创建持久化配置，不依赖宿主机 bind mount，
 适用于 GitHub 拉取式部署和远程 Docker daemon。部署差异优先通过 `.env` 或平台环境变量覆盖；
@@ -163,8 +165,8 @@ neoqbot init-napcat
 
 - 首次联调保持 `app.dry_run: true`，确认连接、鉴权和审计链路后再启用写操作。
 - 管理 API、OneBot、NapCat WebUI 和 GUI 初始密码使用独立随机 Secret；泄露后立即全部轮换。
-- 管理端默认仅绑定 `127.0.0.1:6688`；NapCat WebUI 和 OneBot 仅在 Compose 内部网络开放。
-  不要额外发布这些内部端口，远程访问优先使用 VPN 或 SSH 隧道。
+- Compose 默认发布管理端 `0.0.0.0:6688`；公网部署必须使用防火墙来源限制和 HTTPS。不需要公网
+  访问时设置 `NEOQBOT_GUI_BIND_IP=127.0.0.1`。NapCat WebUI 和 OneBot 仍仅在内部网络开放。
 - 生产环境必须在可信 HTTPS 反向代理后设置 `app.require_https: true`、`gui.secure_cookie: true`，
   并准确配置 `app.allowed_hosts`、`app.forwarded_allow_ips` 和 `app.management_allowed_networks`。
 - 不要把 `app.forwarded_allow_ips` 设置为 `*`；伪造代理头可能绕过基于来源地址的访问控制。

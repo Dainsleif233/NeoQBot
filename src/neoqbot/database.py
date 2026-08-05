@@ -98,6 +98,7 @@ CREATE TABLE IF NOT EXISTS admin_users (
     password_hash TEXT NOT NULL,
     password_salt TEXT NOT NULL,
     password_iterations INTEGER NOT NULL,
+    role TEXT NOT NULL DEFAULT 'operator',
     must_change_password INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -140,6 +141,15 @@ class Database:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self._lock, self._connect() as connection:
             connection.executescript(SCHEMA)
+            columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(admin_users)").fetchall()
+            }
+            if "role" not in columns:
+                # Before multi-user support every GUI account was an administrator.
+                connection.execute(
+                    "ALTER TABLE admin_users ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'"
+                )
 
     def save_join_request(self, request: JoinRequest) -> bool:
         now = utc_now().isoformat()
@@ -434,10 +444,21 @@ class Database:
                 """
                 INSERT OR IGNORE INTO admin_users (
                     username, password_hash, password_salt, password_iterations,
-                    must_change_password, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, 1, ?, ?)
+                    role, must_change_password, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 'admin', 1, ?, ?)
                 """,
                 (username, password_hash, password_salt, password_iterations, now, now),
+            )
+            return cursor.rowcount == 1
+
+    def promote_gui_user(self, username: str) -> bool:
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE admin_users SET role = 'admin', updated_at = ?
+                WHERE username = ? AND role != 'admin'
+                """,
+                (utc_now().isoformat(), username),
             )
             return cursor.rowcount == 1
 
@@ -447,6 +468,76 @@ class Database:
                 "SELECT * FROM admin_users WHERE username = ?", (username,)
             ).fetchone()
         return dict(row) if row else None
+
+    def list_gui_users(self) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT u.username, u.role, u.must_change_password, u.created_at, u.updated_at,
+                       COUNT(s.token_hash) AS active_sessions
+                FROM admin_users u
+                LEFT JOIN gui_sessions s ON s.username = u.username AND s.expires_at > ?
+                GROUP BY u.username
+                ORDER BY CASE WHEN u.role = 'admin' THEN 0 ELSE 1 END, u.username
+                """,
+                (utc_now().isoformat(),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def create_gui_user(
+        self,
+        username: str,
+        password_hash: str,
+        password_salt: str,
+        password_iterations: int,
+    ) -> bool:
+        now = utc_now().isoformat()
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT OR IGNORE INTO admin_users (
+                    username, password_hash, password_salt, password_iterations,
+                    role, must_change_password, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, 'operator', 1, ?, ?)
+                """,
+                (username, password_hash, password_salt, password_iterations, now, now),
+            )
+            return cursor.rowcount == 1
+
+    def reset_gui_user_password(
+        self,
+        username: str,
+        password_hash: str,
+        password_salt: str,
+        password_iterations: int,
+    ) -> bool:
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE admin_users
+                SET password_hash = ?, password_salt = ?, password_iterations = ?,
+                    must_change_password = 1, updated_at = ?
+                WHERE username = ? AND role = 'operator'
+                """,
+                (
+                    password_hash,
+                    password_salt,
+                    password_iterations,
+                    utc_now().isoformat(),
+                    username,
+                ),
+            )
+            if cursor.rowcount:
+                connection.execute("DELETE FROM gui_sessions WHERE username = ?", (username,))
+            return cursor.rowcount == 1
+
+    def delete_gui_user(self, username: str) -> bool:
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                "DELETE FROM admin_users WHERE username = ? AND role = 'operator'",
+                (username,),
+            )
+            return cursor.rowcount == 1
 
     def update_admin_password(
         self,
@@ -548,7 +639,7 @@ class Database:
             row = connection.execute(
                 """
                 SELECT s.token_hash, s.username, s.csrf_token, s.expires_at,
-                       u.must_change_password
+                       u.must_change_password, u.role
                 FROM gui_sessions s
                 JOIN admin_users u ON u.username = s.username
                 WHERE s.token_hash = ? AND s.expires_at > ?

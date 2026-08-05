@@ -496,3 +496,124 @@ input, textarea, select { border-radius: 6px; padding: 9px 10px; background: var
   .orchestration-toolbar > .toolbar-cluster:last-child { margin-left: auto; }
   .orchestration-statusbar span:last-child { display: none; }
 }
+
+/* Multi-user access management. */
+.user-management-layout { display: grid; grid-template-columns: minmax(320px, 390px) minmax(0, 1fr); align-items: start; gap: 18px; }
+.user-create-panel { position: sticky; top: 18px; }
+.user-management-intro { margin: -4px 0 0; line-height: 1.7; }
+.user-create-panel label small { color: var(--subtle); font-weight: 500; line-height: 1.5; }
+.user-list { display: grid; gap: 9px; }
+.user-card { display: grid; grid-template-columns: minmax(170px, 1fr) minmax(160px, .8fr) auto; align-items: center; gap: 18px; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); }
+.user-card-identity { display: flex; align-items: center; gap: 11px; min-width: 0; }
+.user-card-identity > div { min-width: 0; }
+.user-card-identity strong, .user-card-identity small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.user-card-identity small { margin-top: 4px; color: var(--muted); }
+.user-card-avatar { flex: none; width: 36px; height: 36px; }
+.user-card-status { display: grid; justify-items: start; gap: 6px; color: var(--subtle); }
+.pill.attention { border-style: dashed; color: var(--text); }
+.user-card-actions { flex-wrap: nowrap; justify-content: flex-end; }
+.user-card-actions .button { white-space: nowrap; }
+.protected-user-label { color: var(--subtle); white-space: nowrap; }
+.form-dialog { width: min(520px, calc(100vw - 32px)); padding: 0; border: 1px solid var(--line-strong); border-radius: 12px; color: var(--text); background: var(--surface); box-shadow: var(--shadow); }
+.form-dialog::backdrop { background: rgba(0, 0, 0, .62); backdrop-filter: blur(5px); }
+.form-dialog form { padding: 22px; }
+.form-dialog header { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding-bottom: 16px; border-bottom: 1px solid var(--line); }
+.form-dialog h2 { margin: 0; }
+.form-dialog header .icon-button { width: 32px; height: 32px; font-size: 24px; }
+.form-dialog > form > .muted { line-height: 1.65; }
+.form-dialog footer { justify-content: flex-end; margin-top: 22px; }
+
+/* Readable type scale: roughly 25% larger across the workbench. */
+.eyebrow { font-size: 12.5px; }
+.lead { font-size: 22.5px; }
+.auth-card h2, .panel h2, .section-title h2, .section-heading h2 { font-size: 30px; }
+.fine-print { font-size: 13.75px; }
+label { font-size: 15px; }
+.icon-button, .menu-button { font-size: 15px; }
+.sidebar-brand strong { font-size: 17.5px; }
+.sidebar-brand span { font-size: 11.25px; }
+.nav-item { font-size: 15px; }
+.nav-item > .nav-glyph { font-size: 18px; }
+.user-chip strong { font-size: 13.75px; }
+.user-chip small { font-size: 11.25px; }
+.avatar { font-size: 13.75px; }
+.topbar h1 { font-size: 24px; }
+.topbar .eyebrow { font-size: 10px; }
+.button { font-size: 13.75px; }
+.pill { font-size: 12.5px; }
+.banner, .metric-card span { font-size: 15px; }
+.metric-card strong { font-size: 37.5px; }
+.summary-row strong { font-size: 16.25px; }
+.task-tag { font-size: 12.5px; }
+.action-button span { font-size: 15px; }
+.action-button small { font-size: 11.25px; }
+.console-output { font-size: 13.75px; }
+.diagnostic { font-size: 13.75px; }
+.integration-logo { font-size: 15px; }
+.integration-card h3 { font-size: 22.5px; }
+.integration-meta { font-size: 13.75px; }
+.integration-status { font-size: 12.5px; }
+.login-guide h2 { font-size: 30px; }
+.login-guide ol { font-size: 16.25px; }
+.login-state, .qr-stage > p { font-size: 15px; }
+.progress-intro strong { font-size: 21.25px; }
+.progress-intro small { font-size: 13.75px; }
+.settings-step > span { font-size: 12.5px; }
+.settings-step strong { font-size: 15px; }
+.settings-step small { font-size: 12.5px; }
+.switch-field span strong { font-size: 15px; }
+.code-input { font-size: 13.75px; }
+.editor-index { font-size: 12.5px; }
+.connection-hint { font-size: 13.75px; }
+.orchestration-link-card strong { font-size: 13.75px; }
+.orchestration-link-card small { font-size: 11.25px; }
+.task-master strong { font-size: 16.25px; }
+.task-note { font-size: 12.5px; }
+.review-grid span, .review-notice span { font-size: 13.75px; }
+.review-grid strong { font-size: 25px; }
+.record-filter-bar label { font-size: 11.25px; }
+.record-filter-bar input, .record-filter-bar select { font-size: 12.5px; }
+.record-summary { font-size: 13.75px; }
+.record-summary small, .record-summary > span { font-size: 11.25px; }
+.record-item pre { font-size: 12.5px; }
+.records-pagination { font-size: 11.25px; }
+.command-category, .command-dialog > footer { font-size: 10px; }
+.command-item strong, .command-empty { font-size: 13.75px; }
+.command-item small { font-size: 11.25px; }
+.user-card-identity strong { font-size: 15px; }
+.user-card-identity small, .user-card-status small, .protected-user-label { font-size: 12.5px; }
+
+/* Graph node text grows more conservatively to preserve dense network layouts. */
+.graph-edge-label { font-size: 10.35px; }
+.node-glyph { font-size: 15px; }
+.node-kind { font-size: 9.2px; }
+.node-name { font-size: 13.8px; }
+.node-meta { font-size: 10.35px; }
+.canvas-empty strong { font-size: 16.25px; }
+.inspector-empty span { font-size: 11.25px; }
+.inspector-empty strong { font-size: 17.5px; }
+.inspector-empty p { font-size: 13.75px; }
+.inspector-header small { font-size: 10px; }
+.inspector-header h3 { font-size: 16.25px; }
+.inspector-section h4, .inspector-form label, .inspector-section label { font-size: 12.5px; }
+.inspector-status { font-size: 11.25px; }
+.inspector-muted { font-size: 12.5px; }
+.inspector-metrics span { font-size: 10px; }
+.inspector-metrics strong { font-size: 18.75px; }
+.inspector-records strong { font-size: 12.5px; }
+.inspector-records p { font-size: 11.25px; }
+.inspector-records small { font-size: 10px; }
+.connection-list span { font-size: 12.5px; }
+.connection-list select { font-size: 11.25px; }
+.orchestration-statusbar, .context-menu-label { font-size: 10px; }
+.context-menu button > span, .context-menu strong { font-size: 12.5px; }
+.context-menu small { font-size: 10px; }
+
+@media (max-width: 1120px) {
+  .user-management-layout { grid-template-columns: 1fr; }
+  .user-create-panel { position: static; }
+}
+@media (max-width: 720px) {
+  .user-card { grid-template-columns: 1fr; }
+  .user-card-actions { justify-content: flex-start; }
+}

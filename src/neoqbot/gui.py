@@ -33,6 +33,19 @@ class PasswordPayload(BaseModel):
     new_password: str = Field(min_length=14, max_length=512)
 
 
+class UserCreatePayload(BaseModel):
+    username: str = Field(
+        min_length=3,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$",
+    )
+    password: str = Field(min_length=14, max_length=512)
+
+
+class UserPasswordResetPayload(BaseModel):
+    password: str = Field(min_length=14, max_length=512)
+
+
 class SettingsPayload(BaseModel):
     config: dict[str, Any]
     revision: str = Field(default="", max_length=64)
@@ -191,6 +204,20 @@ def register_gui(
             raise HTTPException(status_code=403, detail="首次登录必须先修改随机初始密码")
         return session
 
+    def administrator(
+        session: GuiSession = Depends(ready_admin),
+    ) -> GuiSession:
+        if session.role != "admin":
+            raise HTTPException(status_code=403, detail="只有管理员可以管理平台用户")
+        return session
+
+    def administrator_csrf(
+        session: GuiSession = Depends(ready_admin_csrf),
+    ) -> GuiSession:
+        if session.role != "admin":
+            raise HTTPException(status_code=403, detail="只有管理员可以管理平台用户")
+        return session
+
     @app.get("/", include_in_schema=False)
     async def root() -> RedirectResponse:
         return RedirectResponse("/gui/")
@@ -245,6 +272,7 @@ def register_gui(
             "username": session.username,
             "csrf_token": session.csrf_token,
             "must_change_password": session.must_change_password,
+            "role": session.role,
         }
 
     @app.get("/api/gui/auth/session")
@@ -255,6 +283,7 @@ def register_gui(
             "username": session.username,
             "csrf_token": session.csrf_token,
             "must_change_password": session.must_change_password,
+            "role": session.role,
         }
 
     @app.post("/api/gui/auth/logout")
@@ -291,6 +320,79 @@ def register_gui(
         if not changed:
             raise HTTPException(status_code=400, detail="当前密码错误")
         get_container().database.audit("gui_password", "changed", "admin_user", session.username)
+        return {"ok": True}
+
+    @app.get("/api/gui/users")
+    async def gui_users(
+        _: GuiSession = Depends(administrator),
+    ) -> dict[str, Any]:
+        users = await asyncio.to_thread(get_container().database.list_gui_users)
+        for user in users:
+            user["must_change_password"] = bool(user["must_change_password"])
+            user["active_sessions"] = int(user["active_sessions"])
+        return {"users": users}
+
+    @app.post("/api/gui/users", status_code=201)
+    async def gui_create_user(
+        payload: UserCreatePayload,
+        session: GuiSession = Depends(administrator_csrf),
+    ) -> dict[str, Any]:
+        username = payload.username.strip()
+        try:
+            created = await asyncio.to_thread(
+                get_container().auth.create_operator, username, payload.password
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not created:
+            raise HTTPException(status_code=409, detail="该用户名已存在")
+        get_container().database.audit(
+            "gui_user_create",
+            "created",
+            "gui_user",
+            username,
+            {"actor": session.username, "role": "operator"},
+        )
+        return {"ok": True, "username": username, "role": "operator"}
+
+    @app.put("/api/gui/users/{username}/password")
+    async def gui_reset_user_password(
+        username: str,
+        payload: UserPasswordResetPayload,
+        session: GuiSession = Depends(administrator_csrf),
+    ) -> dict[str, bool]:
+        try:
+            changed = await asyncio.to_thread(
+                get_container().auth.reset_operator_password, username, payload.password
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not changed:
+            raise HTTPException(status_code=404, detail="子用户不存在或不可重置")
+        get_container().database.audit(
+            "gui_user_password_reset",
+            "reset",
+            "gui_user",
+            username,
+            {"actor": session.username},
+        )
+        return {"ok": True}
+
+    @app.delete("/api/gui/users/{username}")
+    async def gui_delete_user(
+        username: str,
+        session: GuiSession = Depends(administrator_csrf),
+    ) -> dict[str, bool]:
+        deleted = await asyncio.to_thread(get_container().database.delete_gui_user, username)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="子用户不存在或不可删除")
+        get_container().database.audit(
+            "gui_user_delete",
+            "deleted",
+            "gui_user",
+            username,
+            {"actor": session.username},
+        )
         return {"ok": True}
 
     @app.get("/api/gui/dashboard")

@@ -48,7 +48,7 @@ services:
       - path: .env
         required: false
     environment:
-      # 容器内部必须监听所有接口；宿主机发布仍默认限制为 127.0.0.1。
+      # 容器内部监听所有接口；宿主机发布地址由 NEOQBOT_GUI_BIND_IP 控制。
       NEOQBOT_CONFIG: /app/data/config.yaml
       NEOQBOT_APP__HOST: 0.0.0.0
     command:

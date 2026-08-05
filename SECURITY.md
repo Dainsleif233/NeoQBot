@@ -24,8 +24,9 @@
 NeoQBot 无法承诺“绝对零漏洞”。安全部署必须同时依赖应用配置、主机防火墙、反向代理、容器运行时
 和 QQ/飞书账号自身的安全控制。最低要求如下：
 
-1. 保持 NeoQBot 管理端绑定 `127.0.0.1:6688`。NapCat WebUI `6099` 和 OneBot HTTP `3000`
-   默认仅在 Compose 内部网络可达，不要为它们增加宿主机或公网端口映射。
+1. Compose 为便于直接部署默认发布 `0.0.0.0:6688`。公网开放前必须配置防火墙来源白名单和 HTTPS；
+   不需要公网访问时在 `.env` 设置 `NEOQBOT_GUI_BIND_IP=127.0.0.1`。NapCat WebUI `6099` 和 OneBot
+   HTTP `3000` 默认仅在 Compose 内部网络可达，不要增加宿主机或公网端口映射。
 2. 远程管理优先使用 WireGuard/Tailscale 等 VPN 或 SSH 隧道。需要域名访问时，使用受维护的 HTTPS
    反向代理，并在代理层增加来源 IP、身份感知访问或客户端证书控制。
 3. 生产配置设置 `app.environment: production`、`app.require_https: true`、
@@ -85,8 +86,9 @@ the latest release; upgrade unsupported versions before validation.
 No software can guarantee zero vulnerabilities. A secure NeoQBot deployment also depends on the host
 firewall, reverse proxy, container runtime, backups, and QQ/Feishu account controls.
 
-- Keep the console on `127.0.0.1:6688`. NapCat `6099` and OneBot `3000` are internal-only by
-  default; do not publish them on the host or Internet.
+- Compose publishes the console on `0.0.0.0:6688` by default for direct deployments. Before public
+  exposure, enforce a firewall source allowlist and HTTPS; set `NEOQBOT_GUI_BIND_IP=127.0.0.1` when
+  public access is unnecessary. NapCat `6099` and OneBot `3000` remain internal-only.
 - Prefer a VPN or SSH tunnel. If a domain is required, use an HTTPS proxy with an additional access
   control layer.
 - In production, enable `app.require_https` and `gui.secure_cookie`; configure exact allowed hosts,

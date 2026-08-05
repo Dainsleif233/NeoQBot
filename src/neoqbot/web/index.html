@@ -7,7 +7,7 @@
   <title>NeoQBot 管理中心</title>
   <link rel="icon" type="image/png" href="/gui/assets/img/neoqbot-logo.png">
   <link rel="apple-touch-icon" href="/gui/assets/img/neoqbot-logo.png">
-  <link rel="stylesheet" href="/gui/assets/app.css?v=0.4.0">
+  <link rel="stylesheet" href="/gui/assets/app.css?v=20260805">
 </head>
 <body>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
@@ -22,9 +22,9 @@
     <section class="auth-card">
       <div class="auth-card-head">
         <img class="brand-logo card-logo" src="/gui/assets/img/neoqbot-logo.png" alt="NeoQBot">
-        <div><p class="eyebrow">NeoQBot Console</p><h2>管理员登录</h2></div>
+        <div><p class="eyebrow">NeoQBot Console</p><h2>平台登录</h2></div>
       </div>
-      <p class="muted">首次部署使用 admin 和自动生成的随机密码，登录后必须立即修改。</p>
+      <p class="muted">管理员与受邀子用户均使用独立账号登录；首次登录需要立即更换初始密码。</p>
       <form id="login-form" class="stack-lg">
         <label>用户名<input id="login-username" autocomplete="username" value="admin" required></label>
         <label>密码<input id="login-password" type="password" autocomplete="current-password" required></label>
@@ -49,8 +49,8 @@
       <p class="muted">至少 14 个字符，建议使用密码管理器生成并保存。</p>
       <form id="password-form" class="stack-lg">
         <label>当前密码<input id="current-password" type="password" autocomplete="current-password" required></label>
-        <label>新密码<input id="new-password" type="password" autocomplete="new-password" minlength="10" required></label>
-        <label>确认新密码<input id="confirm-password" type="password" autocomplete="new-password" minlength="10" required></label>
+        <label>新密码<input id="new-password" type="password" autocomplete="new-password" minlength="14" required></label>
+        <label>确认新密码<input id="confirm-password" type="password" autocomplete="new-password" minlength="14" required></label>
         <button class="button primary full" type="submit">保存并继续</button>
       </form>
     </section>
@@ -67,9 +67,10 @@
         <button class="nav-item" data-view="integrations"><span class="nav-glyph">⌘</span><span>资源编排</span></button>
         <button class="nav-item" data-view="settings"><span class="nav-glyph">⚙</span><span>系统设置</span></button>
         <button class="nav-item" data-view="records"><span class="nav-glyph">≡</span><span>记录与审计</span></button>
+        <button id="users-nav" class="nav-item hidden" data-view="users"><span class="nav-glyph">♙</span><span>用户管理</span></button>
       </nav>
       <div class="sidebar-footer">
-        <div class="user-chip"><span class="avatar">A</span><div><strong id="current-user">admin</strong><small>Administrator</small></div></div>
+        <div class="user-chip"><span id="current-user-avatar" class="avatar">A</span><div><strong id="current-user">admin</strong><small id="current-user-role">管理员</small></div></div>
         <button id="logout-button" class="icon-button" title="退出登录">退出</button>
       </div>
     </aside>
@@ -299,8 +300,40 @@
           <footer class="records-pagination"><span id="records-range">0 条记录</span><div class="button-row"><button id="records-prev" class="button ghost" type="button" disabled>上一页</button><span id="records-page">第 1 页</span><button id="records-next" class="button ghost" type="button" disabled>下一页</button></div></footer>
         </article>
       </section>
+
+      <section id="view-users" class="view">
+        <div class="user-management-layout">
+          <article class="panel user-create-panel">
+            <div class="panel-heading"><div><p class="eyebrow">Invite operator</p><h2>创建子用户</h2></div><span class="pill">管理员专属</span></div>
+            <p class="muted user-management-intro">子用户可以和管理员一起管理 Bot、群、知识库及平台设置，但不能创建或删除其他用户。</p>
+            <form id="user-create-form" class="stack-lg">
+              <label>账号名<input id="user-create-username" autocomplete="off" minlength="3" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_.-]*" placeholder="例如 operator-lin" required><small>3–64 位，可使用字母、数字、点、下划线和短横线。</small></label>
+              <label>初始密码<input id="user-create-password" type="password" autocomplete="new-password" minlength="14" required><small>至少 14 个字符，不能包含账号名。</small></label>
+              <label>确认初始密码<input id="user-create-confirm" type="password" autocomplete="new-password" minlength="14" required></label>
+              <button class="button primary full" type="submit">创建并要求首次改密</button>
+            </form>
+          </article>
+          <article class="panel user-list-panel">
+            <div class="panel-heading"><div><p class="eyebrow">Access control</p><h2>平台用户</h2></div><button id="users-refresh" class="button secondary" type="button">刷新</button></div>
+            <div id="user-list" class="user-list"><div class="empty-state">正在读取用户…</div></div>
+          </article>
+        </div>
+      </section>
     </div>
   </div>
+
+  <dialog id="user-password-dialog" class="form-dialog">
+    <form id="user-password-form" method="dialog">
+      <header><div><p class="eyebrow">Reset credential</p><h2>重置子用户密码</h2></div><button id="user-password-close" class="icon-button" type="button" aria-label="关闭">×</button></header>
+      <p class="muted">正在为 <strong id="user-password-name"></strong> 设置新的初始密码。保存后该用户的现有会话会立即失效，并在下次登录时强制改密。</p>
+      <input id="user-password-target" type="hidden">
+      <div class="stack-lg">
+        <label>新初始密码<input id="user-reset-password" type="password" autocomplete="new-password" minlength="14" required></label>
+        <label>确认密码<input id="user-reset-confirm" type="password" autocomplete="new-password" minlength="14" required></label>
+      </div>
+      <footer class="button-row"><button id="user-password-cancel" class="button ghost" type="button">取消</button><button class="button primary" type="submit">重置密码</button></footer>
+    </form>
+  </dialog>
 
   <dialog id="command-dialog" class="command-dialog">
     <header><span class="command-icon">⌕</span><input id="command-query" placeholder="输入命令或搜索功能" autocomplete="off"><button id="command-close" type="button" aria-label="关闭命令面板">×</button></header>
@@ -308,6 +341,6 @@
     <footer><span><kbd>↑</kbd><kbd>↓</kbd> 选择</span><span><kbd>Enter</kbd> 执行</span><span><kbd>Esc</kbd> 关闭</span></footer>
   </dialog>
 
-  <script src="/gui/assets/app.js?v=0.4.0" defer></script>
+  <script src="/gui/assets/app.js?v=20260805" defer></script>
 </body>
 </html>

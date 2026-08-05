@@ -106,6 +106,9 @@ uv run neoqbot --config config.yaml serve
 <http://127.0.0.1:8080/gui/> を開きます。初期ユーザー名は `admin` です。ランダムな初期
 パスワードは `data/secrets/gui-bootstrap-password` から読み取ります。初回ログイン時に
 パスワード変更が必須です。このファイルをリポジトリへコミットしないでください。
+管理者は「ユーザー管理」から子ユーザーを作成し、初期パスワードを設定できます。子ユーザーも
+初回ログイン時にパスワード変更が必須です。Bot、グループ、ナレッジベース、プラットフォーム設定を
+共同管理できますが、他のユーザーの作成、リセット、削除はできません。
 
 ## Docker デプロイ
 
@@ -117,11 +120,11 @@ docker compose logs -f neoqbot
 docker compose exec neoqbot sh -c 'cat /app/data/secrets/gui-bootstrap-password'
 ```
 
-最後のコマンドでランダムな初期パスワードを表示します。管理画面は既定でホストのループバック
-インターフェースだけにバインドされ、<http://127.0.0.1:6688/gui/> で利用できます。NapCat の
-`6099` と OneBot の `3000` は Compose 内部ネットワークだけで利用され、ホストポートを消費しません。
-これらをインターネットへ公開しないでください。リモート管理には VPN、SSH トンネル、または
-アクセス制御付き HTTPS リバースプロキシを使用してください。
+最後のコマンドでランダムな初期パスワードを表示します。Compose は既定で管理画面を
+`0.0.0.0:6688` に公開するため、サーバー IP からアクセスできます。公開 HTTP は認証情報を平文で
+送信するため、ファイアウォールで接続元を制限し、速やかに HTTPS を導入してください。公開アクセスが
+不要な場合は `.env` に `NEOQBOT_GUI_BIND_IP=127.0.0.1` を設定します。NapCat の `6099` と OneBot
+の `3000` は Compose 内部ネットワークだけで利用し、インターネットへ公開しないでください。
 
 初回起動時、Compose はイメージ内に組み込まれた `config.example.yaml` から永続設定を作成します。
 ホストの bind mount を使用しないため、Git ベースの環境やリモート Docker daemon でも未追跡の
@@ -169,8 +172,9 @@ neoqbot init-napcat
 - 初期接続確認では `app.dry_run: true` を維持してください。
 - 管理 API、OneBot、NapCat WebUI、GUI 初期ログインには別々のランダム Secret を使用し、
   漏えい時は影響する Secret を直ちにローテーションしてください。
-- 管理画面は `127.0.0.1:6688` に維持してください。NapCat WebUI と OneBot は既定で内部専用です。
-  ホストへの追加公開は避け、VPN または SSH トンネルを使用してください。
+- Compose は既定で管理画面を `0.0.0.0:6688` に公開します。公開時はファイアウォールの接続元制限と
+  HTTPS が必須です。公開不要なら `NEOQBOT_GUI_BIND_IP=127.0.0.1` を設定してください。NapCat
+  WebUI と OneBot は内部専用のまま維持します。
 - 信頼できる HTTPS プロキシの背後では `app.require_https: true`、`gui.secure_cookie: true` を設定し、
   `app.allowed_hosts`、`app.forwarded_allow_ips`、`app.management_allowed_networks` を正確に指定します。
 - `app.forwarded_allow_ips` に `*` を指定しないでください。偽装されたプロキシヘッダーにより、
