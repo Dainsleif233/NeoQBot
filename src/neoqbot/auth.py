@@ -38,10 +38,14 @@ class GuiAuth:
 
     def ensure_bootstrap_admin(self) -> bool:
         existing = self.database.get_admin_user(self.config.bootstrap_username)
-        if existing:
-            self.database.promote_gui_user(self.config.bootstrap_username)
-        if existing and not bool(existing["must_change_password"]):
+        if existing and str(existing.get("role")) == "admin":
+            if not bool(existing["must_change_password"]):
+                return False
+        elif self.database.get_gui_administrator():
+            # The bootstrap administrator may have changed its username.
             return False
+        elif existing:
+            raise RuntimeError("GUI bootstrap username is occupied by a non-administrator")
         password = resolve_secret(
             self.config.bootstrap_password, self.config.bootstrap_password_file
         )
@@ -64,17 +68,21 @@ class GuiAuth:
             self.config.bootstrap_username, password_hash, encoded_salt, PBKDF2_ITERATIONS
         )
 
+    @staticmethod
+    def _password_matches(user: dict[str, object], password: str) -> bool:
+        try:
+            salt = base64.b64decode(str(user["password_salt"]))
+            expected = _hash_password(password, salt, int(user["password_iterations"]))
+        except (ValueError, TypeError, KeyError):
+            return False
+        return secrets.compare_digest(expected, str(user["password_hash"]))
+
     def login(self, username: str, password: str) -> tuple[str, GuiSession] | None:
         user = self.database.get_admin_user(username)
         if not user:
             _hash_password(password, _DUMMY_SALT, PBKDF2_ITERATIONS)
             return None
-        try:
-            salt = base64.b64decode(user["password_salt"])
-            expected = _hash_password(password, salt, int(user["password_iterations"]))
-        except (ValueError, TypeError):
-            return None
-        if not secrets.compare_digest(expected, str(user["password_hash"])):
+        if not self._password_matches(user, password):
             return None
         token = secrets.token_urlsafe(48)
         csrf = secrets.token_urlsafe(32)
@@ -142,6 +150,14 @@ class GuiAuth:
             PBKDF2_ITERATIONS,
         )
 
+    def rename_user(self, session: GuiSession, new_username: str, current_password: str) -> bool:
+        if new_username == session.username:
+            raise ValueError("新用户名与当前用户名相同")
+        user = self.database.get_admin_user(session.username)
+        if not user or not self._password_matches(user, current_password):
+            raise ValueError("当前密码错误")
+        return self.database.rename_gui_user(session.username, new_username)
+
     def logout(self, token: str | None) -> None:
         if token:
             self.database.delete_gui_session(_token_hash(token))
@@ -153,9 +169,7 @@ class GuiAuth:
         user = self.database.get_admin_user(session.username)
         if not user:
             return False
-        salt = base64.b64decode(user["password_salt"])
-        current_hash = _hash_password(current_password, salt, int(user["password_iterations"]))
-        if not secrets.compare_digest(current_hash, str(user["password_hash"])):
+        if not self._password_matches(user, current_password):
             return False
         if secrets.compare_digest(current_password, new_password):
             raise ValueError("新密码不能与当前密码相同")

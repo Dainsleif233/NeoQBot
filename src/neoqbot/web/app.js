@@ -60,6 +60,40 @@
     showToast.timer = window.setTimeout(function () { toast.className = "toast"; }, 3200);
   }
 
+  var confirmResolver = null;
+
+  function settleConfirm(value) {
+    if (!confirmResolver) return;
+    var resolve = confirmResolver;
+    confirmResolver = null;
+    if ($("confirm-dialog").open) $("confirm-dialog").close();
+    resolve(value);
+  }
+
+  function confirmAction(options) {
+    options = options || {};
+    if (confirmResolver) settleConfirm(false);
+    $("confirm-title").textContent = options.title || "确认操作";
+    $("confirm-kicker").textContent = options.kicker || "Confirm action";
+    $("confirm-message").textContent = options.message || "是否继续？";
+    $("confirm-icon").textContent = options.icon || (options.danger ? "!" : "?");
+    $("confirm-cancel").textContent = options.cancelText || "取消";
+    $("confirm-accept").textContent = options.confirmText || "确认";
+    $("confirm-dialog").classList.toggle("danger", Boolean(options.danger));
+    $("confirm-dialog").showModal();
+    window.setTimeout(function () { $("confirm-accept").focus(); }, 20);
+    return new Promise(function (resolve) { confirmResolver = resolve; });
+  }
+
+  function showValueDialog(options) {
+    options = options || {};
+    $("value-title").textContent = options.title || "查看内容";
+    $("value-message").textContent = options.message || "请妥善保管以下内容。";
+    $("value-content").value = options.value || "";
+    $("value-dialog").showModal();
+    window.setTimeout(function () { $("value-content").focus(); $("value-content").select(); }, 20);
+  }
+
   async function api(path, options) {
     options = options || {};
     options.headers = options.headers || {};
@@ -82,16 +116,48 @@
     return data;
   }
 
-  function applyTheme(theme) {
-    document.documentElement.dataset.theme = theme;
-    $("theme-button").textContent = theme === "dark" ? "浅色" : "深色";
-    try { window.localStorage.setItem("neoqbot-theme", theme); } catch (_) {}
+  function commitTheme(theme) {
+    var light = theme === "light";
+    document.documentElement.dataset.theme = light ? "light" : "dark";
+    $("theme-button").setAttribute("aria-checked", light ? "true" : "false");
+    $("theme-button").setAttribute("aria-label", light ? "切换深色模式" : "切换浅色模式");
+    $("theme-button").title = light ? "切换深色模式" : "切换浅色模式";
+    $("theme-label").textContent = light ? "切换深色模式" : "切换浅色模式";
+    try { window.localStorage.setItem("neoqbot-theme", light ? "light" : "dark"); } catch (_) {}
+  }
+
+  function applyTheme(theme, animate) {
+    var reducedMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (!animate || reducedMotion) {
+      commitTheme(theme);
+      return;
+    }
+    if (typeof document.startViewTransition !== "function") {
+      var overlay = $("theme-wipe");
+      $("theme-button").disabled = true;
+      overlay.className = "theme-wipe-overlay " + (theme === "light" ? "to-light" : "to-dark");
+      void overlay.offsetWidth;
+      overlay.classList.add("active");
+      window.setTimeout(function () { commitTheme(theme); }, 320);
+      window.setTimeout(function () {
+        overlay.className = "theme-wipe-overlay";
+        $("theme-button").disabled = false;
+      }, 650);
+      return;
+    }
+    $("theme-button").disabled = true;
+    document.documentElement.classList.add("theme-transitioning");
+    var transition = document.startViewTransition(function () { commitTheme(theme); });
+    transition.finished.finally(function () {
+      document.documentElement.classList.remove("theme-transitioning");
+      $("theme-button").disabled = false;
+    });
   }
 
   function initializeTheme() {
     var theme = "dark";
     try { theme = window.localStorage.getItem("neoqbot-theme") || "dark"; } catch (_) {}
-    applyTheme(theme === "light" ? "light" : "dark");
+    applyTheme(theme === "light" ? "light" : "dark", false);
   }
 
   function hideAllRoots() {
@@ -102,6 +168,19 @@
     state.csrf = session.csrf_token;
     state.username = session.username;
     state.role = session.role || "operator";
+  }
+
+  function renderCurrentUser() {
+    var initial = (state.username.charAt(0) || "U").toUpperCase();
+    var roleLabel = state.role === "admin" ? "管理员" : "子用户";
+    $("current-user").textContent = state.username;
+    $("current-user-avatar").textContent = initial;
+    $("current-user-role").textContent = roleLabel;
+    $("profile-avatar").textContent = initial;
+    $("profile-display-name").textContent = state.username;
+    $("profile-role").textContent = roleLabel;
+    $("profile-username").value = state.username;
+    $("users-nav").classList.toggle("hidden", state.role !== "admin");
   }
 
   function showLogin() {
@@ -120,10 +199,7 @@
   async function showApp() {
     hideAllRoots();
     $("app-view").classList.remove("hidden");
-    $("current-user").textContent = state.username;
-    $("current-user-avatar").textContent = (state.username.charAt(0) || "U").toUpperCase();
-    $("current-user-role").textContent = state.role === "admin" ? "管理员" : "子用户";
-    $("users-nav").classList.toggle("hidden", state.role !== "admin");
+    renderCurrentUser();
     await loadDashboard();
   }
 
@@ -186,13 +262,111 @@
     }
   });
 
-  $("logout-button").addEventListener("click", async function () {
+  async function logoutCurrentUser() {
     try { await api("/api/gui/auth/logout", { method: "POST" }); } catch (_) {}
+    if ($("profile-dialog").open) $("profile-dialog").close();
     showLogin();
-  });
+  }
+
+  $("logout-button").addEventListener("click", logoutCurrentUser);
 
   $("theme-button").addEventListener("click", function () {
-    applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+    applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark", true);
+  });
+
+  $("confirm-cancel").addEventListener("click", function () { settleConfirm(false); });
+  $("confirm-accept").addEventListener("click", function () { settleConfirm(true); });
+  $("confirm-dialog").addEventListener("cancel", function (event) {
+    event.preventDefault();
+    settleConfirm(false);
+  });
+
+  function closeValueDialog() {
+    if ($("value-dialog").open) $("value-dialog").close();
+  }
+
+  $("value-close").addEventListener("click", closeValueDialog);
+  $("value-done").addEventListener("click", closeValueDialog);
+  $("value-dialog").addEventListener("cancel", function (event) {
+    event.preventDefault();
+    closeValueDialog();
+  });
+  $("value-copy").addEventListener("click", async function () {
+    try {
+      await navigator.clipboard.writeText($("value-content").value);
+      showToast("内容已复制");
+      closeValueDialog();
+    } catch (_) {
+      $("value-content").focus();
+      $("value-content").select();
+      showToast("内容已选中，请按 Ctrl+C 复制", true);
+    }
+  });
+
+  function openProfileDialog() {
+    renderCurrentUser();
+    $("profile-name-form").reset();
+    $("profile-password-form").reset();
+    $("profile-username").value = state.username;
+    $("profile-dialog").showModal();
+  }
+
+  function closeProfileDialog() {
+    if ($("profile-dialog").open) $("profile-dialog").close();
+  }
+
+  $("profile-button").addEventListener("click", openProfileDialog);
+  $("profile-close").addEventListener("click", closeProfileDialog);
+  $("profile-dialog").addEventListener("cancel", function (event) {
+    event.preventDefault();
+    closeProfileDialog();
+  });
+  $("profile-logout").addEventListener("click", logoutCurrentUser);
+
+  $("profile-name-form").addEventListener("submit", async function (event) {
+    event.preventDefault();
+    var button = event.submitter;
+    var username = $("profile-username").value.trim();
+    button.disabled = true;
+    try {
+      var result = await api("/api/gui/auth/profile", {
+        method: "PUT",
+        body: { username: username, current_password: $("profile-username-password").value }
+      });
+      state.username = result.username;
+      state.role = result.role || state.role;
+      renderCurrentUser();
+      $("profile-username-password").value = "";
+      showToast("用户名已更新");
+      if (state.activeView === "users" && state.role === "admin") await loadUsers();
+    } catch (error) {
+      showToast(error.message, true);
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  $("profile-password-form").addEventListener("submit", async function (event) {
+    event.preventDefault();
+    var password = $("profile-new-password").value;
+    if (password !== $("profile-confirm-password").value) {
+      showToast("两次输入的新密码不一致", true);
+      return;
+    }
+    var button = event.submitter;
+    button.disabled = true;
+    try {
+      await api("/api/gui/auth/password", {
+        method: "POST",
+        body: { current_password: $("profile-current-password").value, new_password: password }
+      });
+      $("profile-password-form").reset();
+      showToast("密码已更新，其他设备的会话已退出");
+    } catch (error) {
+      showToast(error.message, true);
+    } finally {
+      button.disabled = false;
+    }
   });
 
   var titles = {
@@ -209,11 +383,21 @@
       return;
     }
     if (state.activeView === "integrations" && name !== "integrations" && state.orchestrationDirty) {
-      if (!window.confirm("编排还有未保存的更改，离开后将丢失。仍要离开吗？")) return;
+      if (!await confirmAction({
+        title: "离开资源编排？",
+        message: "编排还有未保存的更改，离开后将丢失。",
+        confirmText: "放弃更改并离开",
+        danger: true
+      })) return;
       state.orchestrationDirty = false;
     }
     if (state.activeView === "settings" && name !== "settings" && state.settingsDirty) {
-      if (!window.confirm("系统设置还有未保存的更改，离开后将丢失。仍要离开吗？")) return;
+      if (!await confirmAction({
+        title: "离开系统设置？",
+        message: "系统设置还有未保存的更改，离开后将丢失。",
+        confirmText: "放弃更改并离开",
+        danger: true
+      })) return;
       state.settingsDirty = false;
     }
     state.activeView = name;
@@ -975,12 +1159,17 @@
     content.appendChild(danger);
   }
 
-  function deleteSelectedOrchestrationNode() {
+  async function deleteSelectedOrchestrationNode() {
     var node = graphNode(state.orchestrationSelected);
     if (!node) return;
     if (node.kind === "qq_bot" && state.config.qq.bots.length <= 1) return showToast("至少保留一个 QQ Bot，可将其停用", true);
     if (node.kind === "feishu_bot" && state.config.feishu.bots.length <= 1) return showToast("至少保留一个飞书 Bot，可将其停用", true);
-    if (!window.confirm("删除“" + node.name + "”及其所有连接？更改将在保存编排后生效。")) return;
+    if (!await confirmAction({
+      title: "删除编排资源？",
+      message: "将删除“" + node.name + "”及其所有连接。更改将在保存编排后生效。",
+      confirmText: "删除资源",
+      danger: true
+    })) return;
     if (node.kind === "qq_bot") state.config.qq.bots = state.config.qq.bots.filter(function (bot) { return "qq-bot:" + bot.id !== node.id; });
     else if (node.kind === "feishu_bot") state.config.feishu.bots = state.config.feishu.bots.filter(function (bot) { return "feishu-bot:" + bot.id !== node.id; });
     else state.config.orchestration.resources = state.config.orchestration.resources.filter(function (resource) { return resource.id !== node.id; });
@@ -1176,12 +1365,6 @@
     if (match) focusOrchestrationNode(match.id);
     else showToast("没有找到匹配的编排节点", true);
   });
-  window.addEventListener("beforeunload", function (event) {
-    if (!state.orchestrationDirty && !state.settingsDirty) return;
-    event.preventDefault();
-    event.returnValue = "";
-  });
-
   $("qq-login-close").addEventListener("click", closeQQLogin);
   $("qq-qrcode-refresh").addEventListener("click", function () { refreshQQCode(true); });
   $("qq-token-copy").addEventListener("click", async function () {
@@ -1192,7 +1375,11 @@
         await navigator.clipboard.writeText(data.token);
         showToast("NapCat Token 已复制");
       } catch (_) {
-        window.prompt("NapCat Token（请复制）", data.token);
+        showValueDialog({
+          title: "NapCat Token",
+          message: "浏览器未允许自动复制。请在此复制 Token，并避免发送到聊天、截图或日志中。",
+          value: data.token
+        });
       }
     } catch (error) {
       showToast(error.message, true);
@@ -1383,9 +1570,14 @@
       card.querySelector("[data-open-orchestration]").addEventListener("click", function () {
         switchView("integrations");
       });
-      card.querySelector("[data-remove]").addEventListener("click", function () {
+      card.querySelector("[data-remove]").addEventListener("click", async function () {
         if (state.config.qq.bots.length <= 1) return showToast("至少保留一个 QQ Bot，可将其停用", true);
-        if (!window.confirm("删除“" + bot.name + "”及其编排连接？保存设置后生效。")) return;
+        if (!await confirmAction({
+          title: "删除 QQ Bot？",
+          message: "将删除“" + bot.name + "”及其编排连接。保存设置后生效。",
+          confirmText: "删除 Bot",
+          danger: true
+        })) return;
         collectQQConfiguration();
         removeBotFromOrchestration("qq-bot", bot.id);
         state.config.qq.bots.splice(index, 1);
@@ -1612,9 +1804,14 @@
       ["executable", "command_templates", "archive_payload_stdin", "extra_environment"].forEach(
         function (name) { lockSensitiveControl(field(card, name)); }
       );
-      card.querySelector("[data-remove]").addEventListener("click", function () {
+      card.querySelector("[data-remove]").addEventListener("click", async function () {
         if (state.config.feishu.bots.length <= 1) return showToast("至少保留一个飞书 Bot，可将其停用", true);
-        if (!window.confirm("删除“" + bot.name + "”及其编排连接？保存设置后生效。")) return;
+        if (!await confirmAction({
+          title: "删除飞书 Bot？",
+          message: "将删除“" + bot.name + "”及其编排连接。保存设置后生效。",
+          confirmText: "删除 Bot",
+          danger: true
+        })) return;
         collectFeishuBots();
         removeBotFromOrchestration("feishu-bot", bot.id);
         state.config.feishu.bots.splice(index, 1);
@@ -2002,7 +2199,12 @@
         actions.append(
           userAction("重置密码", "secondary compact", function () { openUserPasswordDialog(user.username); }),
           userAction("删除", "danger compact", async function () {
-            if (!window.confirm("删除子用户 “" + user.username + "”？其所有登录会话会立即失效。")) return;
+            if (!await confirmAction({
+              title: "删除子用户？",
+              message: "删除“" + user.username + "”后，其所有登录会话会立即失效。",
+              confirmText: "删除用户",
+              danger: true
+            })) return;
             try {
               await api("/api/gui/users/" + encodeURIComponent(user.username), { method: "DELETE" });
               showToast("已删除子用户 " + user.username);
@@ -2115,7 +2317,7 @@
       { label: "运行消息分析", detail: "立即执行所有已启用的分析事务", category: "任务", action: function () { return commandRunJob("moderation"); } },
       { label: "同步全部公告", detail: "立即抓取并归档所有启用群的公告", category: "任务", action: function () { return commandRunJob("announcements"); } },
       { label: "清理过期数据", detail: "立即应用消息和审计保留策略", category: "任务", action: function () { return commandRunJob("maintenance"); } },
-      { label: "切换深浅主题", detail: "在纯黑和纯白工作台之间切换", category: "界面", action: function () { applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark"); } },
+      { label: "切换深浅主题", detail: "在纯黑和纯白工作台之间切换", category: "界面", action: function () { applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark", true); } },
       { label: "刷新当前页面", detail: "重新读取当前页面的最新状态", category: "界面", action: function () { return switchView(state.activeView); } }
     ];
     if (state.role === "admin") {

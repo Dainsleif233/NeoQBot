@@ -451,23 +451,54 @@ class Database:
             )
             return cursor.rowcount == 1
 
-    def promote_gui_user(self, username: str) -> bool:
-        with self._lock, self._connect() as connection:
-            cursor = connection.execute(
-                """
-                UPDATE admin_users SET role = 'admin', updated_at = ?
-                WHERE username = ? AND role != 'admin'
-                """,
-                (utc_now().isoformat(), username),
-            )
-            return cursor.rowcount == 1
-
     def get_admin_user(self, username: str) -> dict[str, Any] | None:
         with self._lock, self._connect() as connection:
             row = connection.execute(
                 "SELECT * FROM admin_users WHERE username = ?", (username,)
             ).fetchone()
         return dict(row) if row else None
+
+    def get_gui_administrator(self) -> dict[str, Any] | None:
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM admin_users
+                WHERE role = 'admin'
+                ORDER BY created_at, username
+                LIMIT 1
+                """
+            ).fetchone()
+        return dict(row) if row else None
+
+    def rename_gui_user(self, username: str, new_username: str) -> bool:
+        now = utc_now().isoformat()
+        with self._lock, self._connect() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM admin_users WHERE username = ? COLLATE NOCASE", (new_username,)
+            ).fetchone()
+            if exists:
+                return False
+            cursor = connection.execute(
+                """
+                INSERT INTO admin_users (
+                    username, password_hash, password_salt, password_iterations,
+                    role, must_change_password, created_at, updated_at
+                )
+                SELECT ?, password_hash, password_salt, password_iterations,
+                       role, must_change_password, created_at, ?
+                FROM admin_users
+                WHERE username = ?
+                """,
+                (new_username, now, username),
+            )
+            if cursor.rowcount != 1:
+                return False
+            connection.execute(
+                "UPDATE gui_sessions SET username = ? WHERE username = ?",
+                (new_username, username),
+            )
+            connection.execute("DELETE FROM admin_users WHERE username = ?", (username,))
+            return True
 
     def list_gui_users(self) -> list[dict[str, Any]]:
         with self._lock, self._connect() as connection:
@@ -493,6 +524,11 @@ class Database:
     ) -> bool:
         now = utc_now().isoformat()
         with self._lock, self._connect() as connection:
+            exists = connection.execute(
+                "SELECT 1 FROM admin_users WHERE username = ? COLLATE NOCASE", (username,)
+            ).fetchone()
+            if exists:
+                return False
             cursor = connection.execute(
                 """
                 INSERT OR IGNORE INTO admin_users (

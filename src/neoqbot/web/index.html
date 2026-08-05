@@ -7,10 +7,11 @@
   <title>NeoQBot 管理中心</title>
   <link rel="icon" type="image/png" href="/gui/assets/img/neoqbot-logo.png">
   <link rel="apple-touch-icon" href="/gui/assets/img/neoqbot-logo.png">
-  <link rel="stylesheet" href="/gui/assets/app.css?v=20260805">
+  <link rel="stylesheet" href="/gui/assets/app.css?v=20260805-2">
 </head>
 <body>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <div id="theme-wipe" class="theme-wipe-overlay" aria-hidden="true"></div>
 
   <main id="login-view" class="auth-layout hidden">
     <section class="auth-brand">
@@ -70,7 +71,9 @@
         <button id="users-nav" class="nav-item hidden" data-view="users"><span class="nav-glyph">♙</span><span>用户管理</span></button>
       </nav>
       <div class="sidebar-footer">
-        <div class="user-chip"><span id="current-user-avatar" class="avatar">A</span><div><strong id="current-user">admin</strong><small id="current-user-role">管理员</small></div></div>
+        <button id="profile-button" class="user-chip profile-trigger" type="button" aria-label="打开个人资料">
+          <span id="current-user-avatar" class="avatar">A</span><span class="profile-trigger-copy"><strong id="current-user">admin</strong><small id="current-user-role">管理员</small></span><span class="profile-chevron">›</span>
+        </button>
         <button id="logout-button" class="icon-button" title="退出登录">退出</button>
       </div>
     </aside>
@@ -82,7 +85,9 @@
         <div class="topbar-actions">
           <span id="connection-pill" class="pill">服务在线</span>
           <button id="command-button" class="button ghost compact command-trigger" type="button"><span>命令</span><kbd>Ctrl K</kbd></button>
-          <button id="theme-button" class="button ghost compact" type="button">浅色</button>
+          <button id="theme-button" class="theme-toggle" type="button" role="switch" aria-checked="false" aria-label="切换浅色模式" title="切换浅色模式">
+            <span class="theme-track" aria-hidden="true"><span class="theme-symbol theme-sun">☼</span><span class="theme-symbol theme-moon">☾</span><span class="theme-thumb"></span></span><span id="theme-label" class="sr-only">切换浅色模式</span>
+          </button>
           <button id="refresh-button" class="button ghost compact" type="button">刷新</button>
         </div>
       </header>
@@ -335,12 +340,60 @@
     </form>
   </dialog>
 
+  <dialog id="profile-dialog" class="form-dialog profile-dialog">
+    <div class="profile-dialog-body">
+      <header><div><p class="eyebrow">Account profile</p><h2>个人资料</h2></div><button id="profile-close" class="icon-button" type="button" aria-label="关闭">×</button></header>
+      <div class="profile-summary">
+        <span id="profile-avatar" class="avatar profile-avatar">A</span>
+        <div><strong id="profile-display-name">admin</strong><small id="profile-role">管理员</small></div>
+        <span class="pill">当前会话</span>
+      </div>
+      <div class="profile-settings-grid">
+        <section class="profile-section">
+          <div><h3>修改用户名</h3><p class="muted">用户名修改后，当前及其他有效会话会自动同步。</p></div>
+          <form id="profile-name-form" class="stack-lg">
+            <label>新用户名<input id="profile-username" autocomplete="username" minlength="3" maxlength="64" pattern="[A-Za-z0-9][A-Za-z0-9_.-]*" required></label>
+            <label>当前密码<input id="profile-username-password" type="password" autocomplete="current-password" required></label>
+            <button class="button secondary" type="submit">保存用户名</button>
+          </form>
+        </section>
+        <section class="profile-section">
+          <div><h3>修改密码</h3><p class="muted">修改后会注销此账号在其他设备上的登录会话。</p></div>
+          <form id="profile-password-form" class="stack-lg">
+            <label>当前密码<input id="profile-current-password" type="password" autocomplete="current-password" required></label>
+            <label>新密码<input id="profile-new-password" type="password" autocomplete="new-password" minlength="14" required></label>
+            <label>确认新密码<input id="profile-confirm-password" type="password" autocomplete="new-password" minlength="14" required></label>
+            <button class="button secondary" type="submit">更新密码</button>
+          </form>
+        </section>
+      </div>
+      <footer class="profile-footer"><span class="muted">角色权限由平台管理员统一分配。</span><button id="profile-logout" class="button danger" type="button">退出当前账号</button></footer>
+    </div>
+  </dialog>
+
+  <dialog id="confirm-dialog" class="form-dialog confirm-dialog">
+    <div class="confirm-dialog-body">
+      <span id="confirm-icon" class="confirm-icon">!</span>
+      <div><p id="confirm-kicker" class="eyebrow">Confirm action</p><h2 id="confirm-title">确认操作</h2><p id="confirm-message" class="muted"></p></div>
+      <footer class="button-row"><button id="confirm-cancel" class="button ghost" type="button">取消</button><button id="confirm-accept" class="button primary" type="button">确认</button></footer>
+    </div>
+  </dialog>
+
+  <dialog id="value-dialog" class="form-dialog value-dialog">
+    <div class="value-dialog-body">
+      <header><div><p class="eyebrow">Secure value</p><h2 id="value-title">查看内容</h2></div><button id="value-close" class="icon-button" type="button" aria-label="关闭">×</button></header>
+      <p id="value-message" class="muted"></p>
+      <textarea id="value-content" class="code-input" rows="5" readonly></textarea>
+      <footer class="button-row"><button id="value-copy" class="button primary" type="button">复制</button><button id="value-done" class="button ghost" type="button">关闭</button></footer>
+    </div>
+  </dialog>
+
   <dialog id="command-dialog" class="command-dialog">
     <header><span class="command-icon">⌕</span><input id="command-query" placeholder="输入命令或搜索功能" autocomplete="off"><button id="command-close" type="button" aria-label="关闭命令面板">×</button></header>
     <div id="command-results" class="command-results"></div>
     <footer><span><kbd>↑</kbd><kbd>↓</kbd> 选择</span><span><kbd>Enter</kbd> 执行</span><span><kbd>Esc</kbd> 关闭</span></footer>
   </dialog>
 
-  <script src="/gui/assets/app.js?v=20260805" defer></script>
+  <script src="/gui/assets/app.js?v=20260805-2" defer></script>
 </body>
 </html>

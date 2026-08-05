@@ -33,6 +33,15 @@ class PasswordPayload(BaseModel):
     new_password: str = Field(min_length=14, max_length=512)
 
 
+class ProfilePayload(BaseModel):
+    username: str = Field(
+        min_length=3,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.-]*$",
+    )
+    current_password: str = Field(min_length=1, max_length=512)
+
+
 class UserCreatePayload(BaseModel):
     username: str = Field(
         min_length=3,
@@ -322,6 +331,37 @@ def register_gui(
         get_container().database.audit("gui_password", "changed", "admin_user", session.username)
         return {"ok": True}
 
+    @app.put("/api/gui/auth/profile")
+    async def gui_update_profile(
+        payload: ProfilePayload,
+        session: GuiSession = Depends(ready_admin_csrf),
+    ) -> dict[str, str]:
+        username = payload.username.strip()
+        if (
+            username.casefold() == get_settings().gui.bootstrap_username.casefold()
+            and session.role != "admin"
+        ):
+            raise HTTPException(status_code=400, detail="该用户名为平台管理员保留")
+        try:
+            changed = await asyncio.to_thread(
+                get_container().auth.rename_user,
+                session,
+                username,
+                payload.current_password,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not changed:
+            raise HTTPException(status_code=409, detail="该用户名已存在")
+        get_container().database.audit(
+            "gui_profile_rename",
+            "renamed",
+            "gui_user",
+            username,
+            {"previous_username": session.username, "role": session.role},
+        )
+        return {"username": username, "role": session.role}
+
     @app.get("/api/gui/users")
     async def gui_users(
         _: GuiSession = Depends(administrator),
@@ -338,6 +378,8 @@ def register_gui(
         session: GuiSession = Depends(administrator_csrf),
     ) -> dict[str, Any]:
         username = payload.username.strip()
+        if username.casefold() == get_settings().gui.bootstrap_username.casefold():
+            raise HTTPException(status_code=400, detail="该用户名为平台管理员保留")
         try:
             created = await asyncio.to_thread(
                 get_container().auth.create_operator, username, payload.password
