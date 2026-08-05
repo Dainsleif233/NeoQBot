@@ -352,7 +352,7 @@
   }
 
   function qqPublicUrl(bot) {
-    return bot.webui_public_url || (window.location.protocol + "//" + window.location.hostname + ":" + bot.webui_public_port);
+    return bot.webui_public_url || "";
   }
 
   async function refreshQQCode(requestNewCode) {
@@ -437,6 +437,10 @@
   function openQQLogin(bot) {
     state.qqLoginBotId = bot.id;
     state.qqUrls[bot.id] = qqPublicUrl(bot);
+    $("qq-login-new-window").disabled = !state.qqUrls[bot.id];
+    $("qq-login-new-window").title = state.qqUrls[bot.id]
+      ? "打开显式配置的 NapCat WebUI 地址"
+      : "NapCat WebUI 默认仅在容器内部可用";
     $("qq-login-title").textContent = bot.name + " · 扫码登录";
     $("qq-login-state").textContent = "正在连接 NapCat…";
     $("qq-login-state").classList.remove("success");
@@ -1182,7 +1186,11 @@
     }
   });
   $("qq-login-new-window").addEventListener("click", function () {
-    if (state.qqLoginBotId) window.open(state.qqUrls[state.qqLoginBotId], "_blank", "noopener");
+    if (!state.qqLoginBotId || !state.qqUrls[state.qqLoginBotId]) {
+      showToast("NapCat WebUI 默认未发布到宿主机；扫码登录不受影响", true);
+      return;
+    }
+    window.open(state.qqUrls[state.qqLoginBotId], "_blank", "noopener");
   });
   $("qq-login-dialog").addEventListener("cancel", function (event) {
     event.preventDefault();

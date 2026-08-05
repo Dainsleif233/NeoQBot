@@ -88,9 +88,10 @@ services:
       - neoqbot-napcat-config:/app/napcat/config
       - neoqbot-qq-session:/app/.config/QQ
       - neoqbot-napcat-cache:/app/napcat/cache
-    ports:
-      - "${NAPCAT_WEBUI_BIND_IP:-127.0.0.1}:${NAPCAT_WEBUI_PORT:-6099}:6099"
-      - "127.0.0.1:${ONEBOT_HTTP_PORT:-6000}:3000"
+    # 仅在 Compose 内部网络提供给 NeoQBot，不占用宿主机端口。
+    expose:
+      - "6099"
+      - "3000"
 
 volumes:
   neoqbot-data:

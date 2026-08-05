@@ -118,9 +118,10 @@ docker compose exec neoqbot sh -c 'cat /app/data/secrets/gui-bootstrap-password'
 ```
 
 最後のコマンドでランダムな初期パスワードを表示します。管理画面は既定でホストのループバック
-インターフェースだけにバインドされ、<http://127.0.0.1:6688/gui/> で利用できます。`6688`、
-`6099`、`6000` をインターネットへ直接公開しないでください。リモート管理には VPN、SSH
-トンネル、またはアクセス制御付き HTTPS リバースプロキシを使用してください。
+インターフェースだけにバインドされ、<http://127.0.0.1:6688/gui/> で利用できます。NapCat の
+`6099` と OneBot の `3000` は Compose 内部ネットワークだけで利用され、ホストポートを消費しません。
+これらをインターネットへ公開しないでください。リモート管理には VPN、SSH トンネル、または
+アクセス制御付き HTTPS リバースプロキシを使用してください。
 
 初回起動時、Compose はイメージ内に組み込まれた `config.example.yaml` から永続設定を作成します。
 ホストの bind mount を使用しないため、Git ベースの環境やリモート Docker daemon でも未追跡の
@@ -168,7 +169,8 @@ neoqbot init-napcat
 - 初期接続確認では `app.dry_run: true` を維持してください。
 - 管理 API、OneBot、NapCat WebUI、GUI 初期ログインには別々のランダム Secret を使用し、
   漏えい時は影響する Secret を直ちにローテーションしてください。
-- 既定のループバックバインドを維持し、`6688`、`6099`、`6000` を直接公開しないでください。
+- 管理画面は `127.0.0.1:6688` に維持してください。NapCat WebUI と OneBot は既定で内部専用です。
+  ホストへの追加公開は避け、VPN または SSH トンネルを使用してください。
 - 信頼できる HTTPS プロキシの背後では `app.require_https: true`、`gui.secure_cookie: true` を設定し、
   `app.allowed_hosts`、`app.forwarded_allow_ips`、`app.management_allowed_networks` を正確に指定します。
 - `app.forwarded_allow_ips` に `*` を指定しないでください。偽装されたプロキシヘッダーにより、

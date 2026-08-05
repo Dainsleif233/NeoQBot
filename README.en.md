@@ -123,9 +123,10 @@ docker compose exec neoqbot sh -c 'cat /app/data/secrets/gui-bootstrap-password'
 ```
 
 The last command prints the random bootstrap password. The console binds to the host loopback
-interface by default and is available at <http://127.0.0.1:6688/gui/>. Do not publish ports `6688`,
-`6099`, or `6000` directly to the Internet. Use a VPN, an SSH tunnel, or an access-controlled HTTPS
-reverse proxy for remote administration.
+interface by default and is available at <http://127.0.0.1:6688/gui/>. NapCat port `6099` and OneBot
+port `3000` stay inside the Compose network and no longer consume host ports. Do not publish them to
+the Internet. Use a VPN, an SSH tunnel, or an access-controlled HTTPS reverse proxy for remote
+administration.
 
 On the first start, Compose creates the persistent configuration from `config.example.yaml` embedded
 in the image. No host bind mount is required, so Git-based platforms and remote Docker daemons work
@@ -175,8 +176,8 @@ neoqbot init-napcat
 - Keep `app.dry_run: true` during initial integration testing.
 - Use independent random secrets for the admin API, OneBot, NapCat WebUI, and GUI bootstrap login;
   rotate all affected secrets immediately after a disclosure.
-- Keep the default loopback binding. Do not expose ports `6688`, `6099`, or `6000` directly to the
-  Internet; prefer a VPN or SSH tunnel.
+- Keep the management console on `127.0.0.1:6688`. NapCat WebUI and OneBot are internal-only by
+  default; do not add public host mappings for them. Prefer a VPN or SSH tunnel.
 - Behind a trusted HTTPS proxy, set `app.require_https: true`, `gui.secure_cookie: true`, and configure
   `app.allowed_hosts`, `app.forwarded_allow_ips`, and `app.management_allowed_networks` precisely.
 - Never set `app.forwarded_allow_ips` to `*`; forged proxy headers can defeat source-address controls.
