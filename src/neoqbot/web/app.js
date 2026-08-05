@@ -490,9 +490,9 @@
       var tags = document.createElement("div");
       tags.className = "task-tags";
       tags.append(
-        taskTag("入群管理", bot.enabled && bot.tasks.join_management.enabled),
-        taskTag("消息检测", bot.enabled && bot.tasks.message_detection.enabled),
-        taskTag("公告同步", bot.enabled && bot.tasks.announcement_sync.enabled)
+        taskTag("入群管理", bot.enabled && bot.task_presence.join_management),
+        taskTag("消息检测", bot.enabled && bot.task_presence.message_detection),
+        taskTag("公告同步", bot.enabled && bot.task_presence.announcement_sync)
       );
       row.append(title, tags);
       target.appendChild(row);
@@ -697,6 +697,25 @@
     return (state.config.orchestration.resources || []).find(function (resource) { return resource.id === id; });
   }
 
+  function defaultQQTasks() {
+    return {
+      join_management: { enabled: false, detect_requests: false, execute_management: false, auto_approve: false, auto_reject: false, minimum_confidence: 0.88 },
+      message_detection: { enabled: false, record_only: false, realtime_detection: false, polling_detection: false, analyze: false, handle: false, interval_minutes: 30, window_minutes: 5, risk_threshold: 0.7, max_messages_per_run: 300 },
+      announcement_sync: { enabled: false, auto_sync: false, sync_interval_minutes: 30, sync_on_startup: false, feishu_bot_id: "" }
+    };
+  }
+
+  function isQQGroupAssignment(edge) {
+    var resource = graphResource(edge.target);
+    return edge.source.indexOf("qq-bot:") === 0 && resource && resource.kind === "qq_group" && ["manages", "observes"].indexOf(edge.relation) >= 0;
+  }
+
+  function managedGroupIdsForBot(botId) {
+    return state.orchestrationEdges.filter(function (edge) {
+      return edge.enabled && edge.source === "qq-bot:" + botId && isQQGroupAssignment(edge);
+    }).map(function (edge) { return graphResource(edge.target).external_id; }).filter(Boolean);
+  }
+
   function removeBotFromOrchestration(kind, botId) {
     if (!state.config.orchestration) return;
     var nodeId = kind + ":" + botId;
@@ -707,7 +726,9 @@
     if (kind === "feishu-bot") {
       (state.config.qq.bots || []).forEach(function (bot) {
         if (bot.search_feishu_bot_id === botId) bot.search_feishu_bot_id = "";
-        if (bot.tasks.announcement_sync.feishu_bot_id === botId) bot.tasks.announcement_sync.feishu_bot_id = "";
+      });
+      (state.config.orchestration.edges || []).forEach(function (edge) {
+        if (edge.tasks && edge.tasks.announcement_sync && edge.tasks.announcement_sync.feishu_bot_id === botId) edge.tasks.announcement_sync.feishu_bot_id = "";
       });
     }
   }
@@ -727,9 +748,9 @@
     if (kind === "feishu-bot") {
       (state.config.qq.bots || []).forEach(function (bot) {
         if (bot.search_feishu_bot_id === previousId) bot.search_feishu_bot_id = nextId;
-        if (bot.tasks.announcement_sync.feishu_bot_id === previousId) {
-          bot.tasks.announcement_sync.feishu_bot_id = nextId;
-        }
+      });
+      (state.config.orchestration.edges || []).forEach(function (edge) {
+        if (edge.tasks && edge.tasks.announcement_sync && edge.tasks.announcement_sync.feishu_bot_id === previousId) edge.tasks.announcement_sync.feishu_bot_id = nextId;
       });
     }
   }
@@ -764,6 +785,13 @@
     config.orchestration.resources.forEach(function (resource, index) {
       nodes.push({ id: resource.id, kind: resource.kind, name: resource.name, enabled: resource.enabled, ref: resource });
       if (!config.orchestration.layout[resource.id]) config.orchestration.layout[resource.id] = defaultNodePosition(resource.kind, index);
+    });
+    var resources = new Map(config.orchestration.resources.map(function (resource) { return [resource.id, resource]; }));
+    config.orchestration.edges.forEach(function (edge) {
+      var target = resources.get(edge.target);
+      var assignment = edge.source.indexOf("qq-bot:") === 0 && target && target.kind === "qq_group" && ["manages", "observes"].indexOf(edge.relation) >= 0;
+      if (assignment && !edge.tasks) edge.tasks = defaultQQTasks();
+      if (!assignment && edge.tasks) delete edge.tasks;
     });
     state.orchestrationNodes = nodes;
     state.orchestrationEdges = config.orchestration.edges;
@@ -923,21 +951,16 @@
   }
 
   function syncOrchestrationToBots() {
-    var resources = new Map((state.config.orchestration.resources || []).map(function (resource) { return [resource.id, resource]; }));
     state.config.qq.bots.forEach(function (bot) {
       var nodeId = "qq-bot:" + bot.id;
-      bot.managed_group_ids = state.orchestrationEdges.filter(function (edge) {
-        var resource = resources.get(edge.target);
-        return edge.enabled && edge.source === nodeId && ["manages", "observes"].indexOf(edge.relation) >= 0 && resource && resource.kind === "qq_group" && resource.external_id;
-      }).map(function (edge) { return resources.get(edge.target).external_id; }).filter(function (value, index, values) { return values.indexOf(value) === index; });
-      var archive = state.orchestrationEdges.find(function (edge) {
-        return edge.enabled && edge.source === nodeId && edge.target.indexOf("feishu-bot:") === 0 && ["archives_to", "syncs"].indexOf(edge.relation) >= 0;
-      });
-      if (archive) bot.tasks.announcement_sync.feishu_bot_id = archive.target.replace("feishu-bot:", "");
       var search = state.orchestrationEdges.find(function (edge) {
         return edge.enabled && edge.source === nodeId && edge.target.indexOf("feishu-bot:") === 0 && edge.relation === "searches";
       });
       if (search) bot.search_feishu_bot_id = search.target.replace("feishu-bot:", "");
+    });
+    state.orchestrationEdges.forEach(function (edge) {
+      if (isQQGroupAssignment(edge) && !edge.tasks) edge.tasks = defaultQQTasks();
+      if (!isQQGroupAssignment(edge) && edge.tasks) delete edge.tasks;
     });
     state.config.orchestration.edges = state.orchestrationEdges;
     state.config.qq.enabled = state.config.qq.bots.some(function (bot) { return bot.enabled; });
@@ -1013,6 +1036,150 @@
     } catch (error) {
       host.textContent = error.message;
     }
+  }
+
+  function createAssignmentTaskEditor(edge) {
+    edge.tasks = edge.tasks || defaultQQTasks();
+    var tasks = edge.tasks;
+    var editor = document.createElement("article");
+    editor.className = "assignment-task-editor";
+    var source = graphNode(edge.source);
+    var target = graphNode(edge.target);
+    editor.innerHTML = [
+      '<header><div><strong></strong><small></small></div><span class="pill"></span></header>',
+      '<div class="workflow-list">',
+      '<section class="task-card"><div class="task-master"><div><strong>入群管理</strong><small>检测、审核与平台动作</small></div><input data-role="master" data-field="join.enabled" type="checkbox"></div><div class="task-detail">',
+      '<label class="switch-field"><span><strong>检测申请</strong></span><input data-field="join.detect_requests" type="checkbox"></label>',
+      '<label class="switch-field"><span><strong>执行审核</strong></span><input data-field="join.execute_management" type="checkbox"></label>',
+      '<label class="switch-field"><span><strong>自动同意</strong></span><input data-field="join.auto_approve" type="checkbox"></label>',
+      '<label class="switch-field"><span><strong>自动拒绝</strong></span><input data-field="join.auto_reject" type="checkbox"></label>',
+      '<label>最低置信度<input data-field="join.minimum_confidence" type="number" min="0" max="1" step="0.01"></label></div></section>',
+      '<section class="task-card"><div class="task-master"><div><strong>消息记录与分析</strong><small>每个群独立设置窗口和阈值</small></div><input data-role="master" data-field="message.enabled" type="checkbox"></div><div class="task-detail">',
+      '<label class="switch-field"><span><strong>纯记录</strong></span><input data-field="message.record_only" type="checkbox"></label>',
+      '<label class="switch-field"><span><strong>实时登记</strong></span><input data-field="message.realtime_detection" type="checkbox"></label>',
+      '<label class="switch-field"><span><strong>轮询检测</strong></span><input data-field="message.polling_detection" type="checkbox"></label>',
+      '<label class="switch-field"><span><strong>分析</strong></span><input data-field="message.analyze" type="checkbox"></label>',
+      '<label class="switch-field"><span><strong>通知管理员</strong></span><input data-field="message.handle" type="checkbox"></label>',
+      '<label>轮询间隔（分钟）<input data-field="message.interval_minutes" type="number" min="1"></label>',
+      '<label>分析窗口（分钟）<input data-field="message.window_minutes" type="number" min="1"></label>',
+      '<label>风险阈值<input data-field="message.risk_threshold" type="number" min="0" max="1" step="0.01"></label>',
+      '<label>单次最大消息数<input data-field="message.max_messages_per_run" type="number" min="1"></label></div></section>',
+      '<section class="task-card"><div class="task-master"><div><strong>公告同步</strong><small>抓取当前群并归档到飞书</small></div><input data-role="master" data-field="announcement.enabled" type="checkbox"></div><div class="task-detail">',
+      '<label class="switch-field"><span><strong>自动同步</strong></span><input data-field="announcement.auto_sync" type="checkbox"></label>',
+      '<label class="switch-field"><span><strong>启动时同步</strong></span><input data-field="announcement.sync_on_startup" type="checkbox"></label>',
+      '<label>同步间隔（分钟）<input data-field="announcement.sync_interval_minutes" type="number" min="1"></label>',
+      '<label>飞书 Bot ID<input data-field="announcement.feishu_bot_id" placeholder="留空使用默认账号"></label></div></section>',
+      '</div>'
+    ].join("");
+    editor.querySelector("header strong").textContent = (source ? source.name : edge.source) + " → " + (target ? target.name : edge.target);
+    editor.querySelector("header small").textContent = edge.id;
+    editor.querySelector("header .pill").textContent = relationLabel(edge.relation);
+    var values = {
+      "join.enabled": tasks.join_management.enabled,
+      "join.detect_requests": tasks.join_management.detect_requests,
+      "join.execute_management": tasks.join_management.execute_management,
+      "join.auto_approve": tasks.join_management.auto_approve,
+      "join.auto_reject": tasks.join_management.auto_reject,
+      "join.minimum_confidence": tasks.join_management.minimum_confidence,
+      "message.enabled": tasks.message_detection.enabled,
+      "message.record_only": tasks.message_detection.record_only,
+      "message.realtime_detection": tasks.message_detection.realtime_detection,
+      "message.polling_detection": tasks.message_detection.polling_detection,
+      "message.analyze": tasks.message_detection.analyze,
+      "message.handle": tasks.message_detection.handle,
+      "message.interval_minutes": tasks.message_detection.interval_minutes,
+      "message.window_minutes": tasks.message_detection.window_minutes,
+      "message.risk_threshold": tasks.message_detection.risk_threshold,
+      "message.max_messages_per_run": tasks.message_detection.max_messages_per_run,
+      "announcement.enabled": tasks.announcement_sync.enabled,
+      "announcement.auto_sync": tasks.announcement_sync.auto_sync,
+      "announcement.sync_on_startup": tasks.announcement_sync.sync_on_startup,
+      "announcement.sync_interval_minutes": tasks.announcement_sync.sync_interval_minutes,
+      "announcement.feishu_bot_id": tasks.announcement_sync.feishu_bot_id || ""
+    };
+    Object.keys(values).forEach(function (name) { setField(editor, name, values[name]); });
+    editor.querySelectorAll(".task-card").forEach(bindTaskCard);
+    var joinMaster = field(editor, "join.enabled");
+    field(editor, "join.execute_management").addEventListener("change", function () {
+      if (this.checked) { joinMaster.checked = true; field(editor, "join.detect_requests").checked = true; }
+      joinMaster.dispatchEvent(new Event("change"));
+    });
+    field(editor, "join.detect_requests").addEventListener("change", function () {
+      if (this.checked) { joinMaster.checked = true; joinMaster.dispatchEvent(new Event("change")); }
+    });
+    var messageMaster = field(editor, "message.enabled");
+    field(editor, "message.analyze").addEventListener("change", function () {
+      if (this.checked) { messageMaster.checked = true; field(editor, "message.polling_detection").checked = true; }
+      messageMaster.dispatchEvent(new Event("change"));
+    });
+    field(editor, "message.handle").addEventListener("change", function () {
+      if (this.checked) { messageMaster.checked = true; field(editor, "message.polling_detection").checked = true; field(editor, "message.analyze").checked = true; }
+      messageMaster.dispatchEvent(new Event("change"));
+    });
+    ["message.record_only", "message.realtime_detection", "message.polling_detection"].forEach(function (name) {
+      field(editor, name).addEventListener("change", function () {
+        if (this.checked) { messageMaster.checked = true; messageMaster.dispatchEvent(new Event("change")); }
+      });
+    });
+    var announcementMaster = field(editor, "announcement.enabled");
+    ["announcement.auto_sync", "announcement.sync_on_startup"].forEach(function (name) {
+      field(editor, name).addEventListener("change", function () {
+        if (this.checked) { announcementMaster.checked = true; announcementMaster.dispatchEvent(new Event("change")); }
+      });
+    });
+    function commit() {
+      var joinEnabled = field(editor, "join.enabled").checked;
+      var messageEnabled = field(editor, "message.enabled").checked;
+      var announcementEnabled = field(editor, "announcement.enabled").checked;
+      edge.tasks = {
+        join_management: {
+          enabled: joinEnabled,
+          detect_requests: joinEnabled && field(editor, "join.detect_requests").checked,
+          execute_management: joinEnabled && field(editor, "join.execute_management").checked,
+          auto_approve: joinEnabled && field(editor, "join.auto_approve").checked,
+          auto_reject: joinEnabled && field(editor, "join.auto_reject").checked,
+          minimum_confidence: numberValue(field(editor, "join.minimum_confidence").value, 0.88)
+        },
+        message_detection: {
+          enabled: messageEnabled,
+          record_only: messageEnabled && field(editor, "message.record_only").checked,
+          realtime_detection: messageEnabled && field(editor, "message.realtime_detection").checked,
+          polling_detection: messageEnabled && field(editor, "message.polling_detection").checked,
+          analyze: messageEnabled && field(editor, "message.analyze").checked,
+          handle: messageEnabled && field(editor, "message.handle").checked,
+          interval_minutes: numberValue(field(editor, "message.interval_minutes").value, 30),
+          window_minutes: numberValue(field(editor, "message.window_minutes").value, 5),
+          risk_threshold: numberValue(field(editor, "message.risk_threshold").value, 0.7),
+          max_messages_per_run: numberValue(field(editor, "message.max_messages_per_run").value, 300)
+        },
+        announcement_sync: {
+          enabled: announcementEnabled,
+          auto_sync: announcementEnabled && field(editor, "announcement.auto_sync").checked,
+          sync_interval_minutes: numberValue(field(editor, "announcement.sync_interval_minutes").value, 30),
+          sync_on_startup: announcementEnabled && field(editor, "announcement.sync_on_startup").checked,
+          feishu_bot_id: field(editor, "announcement.feishu_bot_id").value.trim()
+        }
+      };
+      markOrchestrationDirty();
+    }
+    editor.querySelectorAll("input").forEach(function (input) {
+      input.addEventListener(input.type === "checkbox" ? "change" : "input", commit);
+    });
+    return editor;
+  }
+
+  function appendAssignmentEditors(node, content) {
+    var assignments = state.orchestrationEdges.filter(function (edge) {
+      return isQQGroupAssignment(edge) && (edge.source === node.id || edge.target === node.id);
+    });
+    if (!assignments.length) return;
+    var section = inspectorSection("群内事务分工");
+    var hint = document.createElement("p");
+    hint.className = "inspector-muted";
+    hint.textContent = "事务属于 Bot 与群的连接；同一 Bot 在不同群可使用不同开关、周期和阈值。";
+    section.appendChild(hint);
+    assignments.forEach(function (edge) { section.appendChild(createAssignmentTaskEditor(edge)); });
+    content.appendChild(section);
   }
 
   function renderOrchestrationInspector(nodeId) {
@@ -1124,6 +1291,8 @@
       }
     }
 
+    appendAssignmentEditors(node, content);
+
     var connections = inspectorSection("连接");
     var connectionList = document.createElement("div");
     connectionList.className = "connection-list";
@@ -1133,7 +1302,14 @@
       row.innerHTML = '<span></span><select><option value="manages">管理</option><option value="observes">监听</option><option value="archives_to">归档</option><option value="searches">检索</option><option value="syncs">同步</option></select><button type="button" title="删除连接">×</button>';
       row.querySelector("span").textContent = other ? other.name : "未知节点";
       row.querySelector("select").value = edge.relation;
-      row.querySelector("select").addEventListener("change", function () { edge.relation = this.value; markOrchestrationDirty(); renderOrchestrationEdges(); });
+      row.querySelector("select").addEventListener("change", function () {
+        edge.relation = this.value;
+        if (isQQGroupAssignment(edge) && !edge.tasks) edge.tasks = defaultQQTasks();
+        if (!isQQGroupAssignment(edge) && edge.tasks) delete edge.tasks;
+        markOrchestrationDirty();
+        renderOrchestrationEdges();
+        renderOrchestrationInspector(node.id);
+      });
       row.querySelector("button").addEventListener("click", function () {
         state.orchestrationEdges.splice(state.orchestrationEdges.indexOf(edge), 1);
         markOrchestrationDirty();
@@ -1332,7 +1508,9 @@
         var duplicate = state.orchestrationEdges.some(function (edge) { return edge.source === sourceId && edge.target === targetId; });
         if (!duplicate) {
           var relation = defaultRelation(graphNode(sourceId), graphNode(targetId));
-          state.orchestrationEdges.push({ id: nextEdgeId(sourceId, targetId, relation), source: sourceId, target: targetId, relation: relation, enabled: true });
+          var edge = { id: nextEdgeId(sourceId, targetId, relation), source: sourceId, target: targetId, relation: relation, enabled: true };
+          state.orchestrationEdges.push(edge);
+          if (isQQGroupAssignment(edge)) edge.tasks = defaultQQTasks();
           markOrchestrationDirty();
         } else showToast("这两个节点已经连接", true);
       }
@@ -1397,7 +1575,7 @@
     closeQQLogin();
   });
 
-  var settingsSteps = ["qq", "tasks", "feishu", "llm", "policy", "storage", "system", "review"];
+  var settingsSteps = ["qq", "feishu", "llm", "policy", "storage", "system", "review"];
 
   function markSettingsDirty() {
     state.settingsDirty = true;
@@ -1453,15 +1631,9 @@
       webui_public_url: "",
       webui_public_port: 6099,
       qrcode_path: "/app/napcat-cache/qrcode.png",
-      managed_group_ids: [],
       administrator_qq_ids: [],
       announcement_actions: ["get_group_notice", "_get_group_notice"],
-      search_feishu_bot_id: "",
-      tasks: {
-        join_management: { enabled: false, detect_requests: false, execute_management: false, auto_approve: false, auto_reject: false, minimum_confidence: 0.88 },
-        message_detection: { enabled: false, record_only: false, realtime_detection: false, polling_detection: false, analyze: false, handle: false, interval_minutes: 30, window_minutes: 5, risk_threshold: 0.7, max_messages_per_run: 300 },
-        announcement_sync: { enabled: false, auto_sync: false, sync_interval_minutes: 30, sync_on_startup: false, feishu_bot_id: "" }
-      }
+      search_feishu_bot_id: ""
     };
   }
 
@@ -1484,11 +1656,17 @@
   function normalizeBotConfig(c) {
     c.qq.bots = c.qq.bots || [];
     c.feishu.bots = c.feishu.bots || [];
-    c.qq.bots.forEach(function (bot) {
-      if (bot.tasks && bot.tasks.message_detection && bot.tasks.message_detection.record_only == null) {
-        bot.tasks.message_detection.record_only = false;
-      }
+    c.orchestration = c.orchestration || { resources: [], edges: [], layout: {} };
+    c.orchestration.resources = c.orchestration.resources || [];
+    c.orchestration.edges = c.orchestration.edges || [];
+    var resources = new Map(c.orchestration.resources.map(function (resource) { return [resource.id, resource]; }));
+    c.orchestration.edges.forEach(function (edge) {
+      var target = resources.get(edge.target);
+      var assignment = edge.source.indexOf("qq-bot:") === 0 && target && target.kind === "qq_group" && ["manages", "observes"].indexOf(edge.relation) >= 0;
+      if (assignment && !edge.tasks) edge.tasks = defaultQQTasks();
+      if (!assignment && edge.tasks) delete edge.tasks;
     });
+    if (c === state.config) state.orchestrationEdges = c.orchestration.edges;
   }
 
   function setField(card, name, value) {
@@ -1556,7 +1734,8 @@
       setField(card, "onebot_base_url", bot.onebot_base_url);
       setField(card, "access_token", "");
       setField(card, "webhook_secret", "");
-      card.querySelector("[data-managed-summary]").textContent = (bot.managed_group_ids || []).length ? "已连接 " + bot.managed_group_ids.length + " 个 QQ 群" : "尚未连接 QQ 群";
+      var managedGroups = managedGroupIdsForBot(bot.id);
+      card.querySelector("[data-managed-summary]").textContent = managedGroups.length ? "已连接 " + managedGroups.length + " 个 QQ 群；事务在资源编排中逐群设置" : "尚未连接 QQ 群";
       setField(card, "administrator_qq_ids", listValue(bot.administrator_qq_ids));
       setField(card, "webui_public_port", bot.webui_public_port);
       setField(card, "webui_public_url", bot.webui_public_url || "");
@@ -1582,7 +1761,6 @@
         removeBotFromOrchestration("qq-bot", bot.id);
         state.config.qq.bots.splice(index, 1);
         renderQQAccountEditors();
-        renderQQWorkflowEditors();
         markSettingsDirty();
       });
       target.appendChild(card);
@@ -1591,108 +1769,6 @@
       var empty = document.createElement("div");
       empty.className = "empty-editor";
       empty.textContent = "点击“添加 QQ Bot”开始配置。";
-      target.appendChild(empty);
-    }
-  }
-
-  function renderQQWorkflowEditors() {
-    var target = $("qq-task-editor");
-    target.replaceChildren();
-    state.config.qq.bots.forEach(function (bot, index) {
-      var card = document.createElement("article");
-      card.className = "editor-card qq-workflow-editor";
-      card.dataset.index = index;
-      card.innerHTML = [
-        '<div class="editor-head"><div class="editor-title"><span class="editor-index"></span><div><strong></strong><small></small></div></div><span class="pill">独立事务</span></div>',
-        '<div class="workflow-list">',
-        '<section class="task-card"><div class="task-master"><div><strong>入群管理</strong><small>检测申请与执行管理分离</small></div><input data-role="master" data-field="join.enabled" type="checkbox"></div><div class="task-detail">',
-        '<label class="switch-field span-2"><span><strong>检测入群消息</strong><small>只登记到 GUI，不分析、不处理</small></span><input data-field="join.detect_requests" type="checkbox"></label>',
-        '<label class="switch-field span-2"><span><strong>执行入群管理</strong><small>进入模型判断与处理链路</small></span><input data-field="join.execute_management" type="checkbox"></label>',
-        '<label class="switch-field"><span><strong>自动同意</strong><small>高置信度 approve</small></span><input data-field="join.auto_approve" type="checkbox"></label>',
-        '<label class="switch-field"><span><strong>自动拒绝</strong><small>建议谨慎启用</small></span><input data-field="join.auto_reject" type="checkbox"></label>',
-        '<label>最低置信度<input data-field="join.minimum_confidence" type="number" min="0" max="1" step="0.01"></label>',
-        '<p class="task-note">只开启检测时，不调用模型，也不向 QQ 发出同意或拒绝动作。</p></div></section>',
-        '<section class="task-card"><div class="task-master"><div><strong>群消息记录与分析</strong><small>原始记录、窗口分析与管理员通知分离</small></div><input data-role="master" data-field="message.enabled" type="checkbox"></div><div class="task-detail">',
-        '<label class="switch-field span-2 featured-switch"><span><strong>纯记录群消息</strong><small>不调用模型；写入 SQLite，并按日追加到本地挂载卷 JSONL</small></span><input data-field="message.record_only" type="checkbox"></label>',
-        '<label class="switch-field"><span><strong>实时登记</strong><small>消息到达即进入 GUI 记录</small></span><input data-field="message.realtime_detection" type="checkbox"></label>',
-        '<label class="switch-field"><span><strong>轮询检测</strong><small>按间隔读取最近窗口</small></span><input data-field="message.polling_detection" type="checkbox"></label>',
-        '<label class="switch-field"><span><strong>分析</strong><small>生成消息风险报告</small></span><input data-field="message.analyze" type="checkbox"></label>',
-        '<label class="switch-field"><span><strong>处理</strong><small>命中风险时通知管理员</small></span><input data-field="message.handle" type="checkbox"></label>',
-        '<label>轮询间隔（分钟）<input data-field="message.interval_minutes" type="number" min="1"></label>',
-        '<label>分析窗口（分钟）<input data-field="message.window_minutes" type="number" min="1"></label>',
-        '<label>风险阈值<input data-field="message.risk_threshold" type="number" min="0" max="1" step="0.01"></label>',
-        '<label>单次最大消息数<input data-field="message.max_messages_per_run" type="number" min="1"></label>',
-        '<p class="task-note">纯记录不会触发分析。分析会自动启用轮询；处理会自动启用分析。</p></div></section>',
-        '<section class="task-card"><div class="task-master"><div><strong>公告同步</strong><small>本地版本库与飞书归档</small></div><input data-role="master" data-field="announcement.enabled" type="checkbox"></div><div class="task-detail">',
-        '<label class="switch-field"><span><strong>自动同步</strong><small>定期抓取新公告</small></span><input data-field="announcement.auto_sync" type="checkbox"></label>',
-        '<label class="switch-field"><span><strong>启动时同步</strong><small>服务启动立即抓取</small></span><input data-field="announcement.sync_on_startup" type="checkbox"></label>',
-        '<label>同步间隔（分钟）<input data-field="announcement.sync_interval_minutes" type="number" min="1"></label>',
-        '<label>归档到飞书 Bot ID<input data-field="announcement.feishu_bot_id" placeholder="留空使用默认飞书 Bot"></label>',
-        '<p class="task-note">建议先手动全量同步并确认公告库，再开启自动同步。</p></div></section>',
-        '</div>'
-      ].join("");
-      card.querySelector(".editor-index").textContent = String(index + 1).padStart(2, "0");
-      card.querySelector(".editor-title strong").textContent = bot.name;
-      card.querySelector(".editor-title small").textContent = bot.id;
-      var join = bot.tasks.join_management;
-      setField(card, "join.enabled", join.enabled);
-      setField(card, "join.detect_requests", join.detect_requests);
-      setField(card, "join.execute_management", join.execute_management);
-      setField(card, "join.auto_approve", join.auto_approve);
-      setField(card, "join.auto_reject", join.auto_reject);
-      setField(card, "join.minimum_confidence", join.minimum_confidence);
-      var message = bot.tasks.message_detection;
-      setField(card, "message.enabled", message.enabled);
-      setField(card, "message.record_only", message.record_only);
-      setField(card, "message.realtime_detection", message.realtime_detection);
-      setField(card, "message.polling_detection", message.polling_detection);
-      setField(card, "message.analyze", message.analyze);
-      setField(card, "message.handle", message.handle);
-      setField(card, "message.interval_minutes", message.interval_minutes);
-      setField(card, "message.window_minutes", message.window_minutes);
-      setField(card, "message.risk_threshold", message.risk_threshold);
-      setField(card, "message.max_messages_per_run", message.max_messages_per_run);
-      var announcement = bot.tasks.announcement_sync;
-      setField(card, "announcement.enabled", announcement.enabled);
-      setField(card, "announcement.auto_sync", announcement.auto_sync);
-      setField(card, "announcement.sync_on_startup", announcement.sync_on_startup);
-      setField(card, "announcement.sync_interval_minutes", announcement.sync_interval_minutes);
-      setField(card, "announcement.feishu_bot_id", announcement.feishu_bot_id || "");
-      card.querySelectorAll(".task-card").forEach(bindTaskCard);
-      var joinMaster = field(card, "join.enabled");
-      field(card, "join.execute_management").addEventListener("change", function () {
-        if (this.checked) { joinMaster.checked = true; field(card, "join.detect_requests").checked = true; }
-        joinMaster.dispatchEvent(new Event("change"));
-      });
-      field(card, "join.detect_requests").addEventListener("change", function () {
-        if (this.checked) { joinMaster.checked = true; joinMaster.dispatchEvent(new Event("change")); }
-      });
-      var messageMaster = field(card, "message.enabled");
-      field(card, "message.analyze").addEventListener("change", function () {
-        if (this.checked) { messageMaster.checked = true; field(card, "message.polling_detection").checked = true; }
-        messageMaster.dispatchEvent(new Event("change"));
-      });
-      field(card, "message.handle").addEventListener("change", function () {
-        if (this.checked) { messageMaster.checked = true; field(card, "message.polling_detection").checked = true; field(card, "message.analyze").checked = true; }
-        messageMaster.dispatchEvent(new Event("change"));
-      });
-      ["message.record_only", "message.realtime_detection", "message.polling_detection"].forEach(function (name) {
-        field(card, name).addEventListener("change", function () {
-          if (this.checked) { messageMaster.checked = true; messageMaster.dispatchEvent(new Event("change")); }
-        });
-      });
-      var announcementMaster = field(card, "announcement.enabled");
-      ["announcement.auto_sync", "announcement.sync_on_startup"].forEach(function (name) {
-        field(card, name).addEventListener("change", function () {
-          if (this.checked) { announcementMaster.checked = true; announcementMaster.dispatchEvent(new Event("change")); }
-        });
-      });
-      target.appendChild(card);
-    });
-    if (!state.config.qq.bots.length) {
-      var empty = document.createElement("div");
-      empty.className = "empty-editor";
-      empty.textContent = "先在“QQ 账号”步骤添加 Bot，再为它分配事务。";
       target.appendChild(empty);
     }
   }
@@ -1719,48 +1795,10 @@
         webui_public_url: field(card, "webui_public_url").value.trim(),
         webui_public_port: numberValue(field(card, "webui_public_port").value, 6099),
         qrcode_path: field(card, "qrcode_path").value.trim() || "/app/napcat-cache/qrcode.png",
-        managed_group_ids: original.managed_group_ids || [],
         administrator_qq_ids: splitList(field(card, "administrator_qq_ids").value),
         announcement_actions: splitList(field(card, "announcement_actions").value),
         search_feishu_bot_id: field(card, "search_feishu_bot_id").value.trim()
       });
-    });
-    document.querySelectorAll(".qq-workflow-editor").forEach(function (card) {
-      var index = Number(card.dataset.index);
-      var bot = bots[index] || defaultQQBot(index);
-      var joinEnabled = field(card, "join.enabled").checked;
-      var messageEnabled = field(card, "message.enabled").checked;
-      var announcementEnabled = field(card, "announcement.enabled").checked;
-      bot.tasks = {
-        join_management: {
-          enabled: joinEnabled,
-          detect_requests: joinEnabled && field(card, "join.detect_requests").checked,
-          execute_management: joinEnabled && field(card, "join.execute_management").checked,
-          auto_approve: joinEnabled && field(card, "join.auto_approve").checked,
-          auto_reject: joinEnabled && field(card, "join.auto_reject").checked,
-          minimum_confidence: numberValue(field(card, "join.minimum_confidence").value, 0.88)
-        },
-        message_detection: {
-          enabled: messageEnabled,
-          record_only: messageEnabled && field(card, "message.record_only").checked,
-          realtime_detection: messageEnabled && field(card, "message.realtime_detection").checked,
-          polling_detection: messageEnabled && field(card, "message.polling_detection").checked,
-          analyze: messageEnabled && field(card, "message.analyze").checked,
-          handle: messageEnabled && field(card, "message.handle").checked,
-          interval_minutes: numberValue(field(card, "message.interval_minutes").value, 30),
-          window_minutes: numberValue(field(card, "message.window_minutes").value, 5),
-          risk_threshold: numberValue(field(card, "message.risk_threshold").value, 0.7),
-          max_messages_per_run: numberValue(field(card, "message.max_messages_per_run").value, 300)
-        },
-        announcement_sync: {
-          enabled: announcementEnabled,
-          auto_sync: announcementEnabled && field(card, "announcement.auto_sync").checked,
-          sync_interval_minutes: numberValue(field(card, "announcement.sync_interval_minutes").value, 30),
-          sync_on_startup: announcementEnabled && field(card, "announcement.sync_on_startup").checked,
-          feishu_bot_id: field(card, "announcement.feishu_bot_id").value.trim()
-        }
-      };
-      bots[index] = bot;
     });
     state.config.qq.bots = bots;
     return bots;
@@ -1863,7 +1901,6 @@
     collectQQConfiguration();
     state.config.qq.bots.push(defaultQQBot(state.config.qq.bots.length));
     renderQQAccountEditors();
-    renderQQWorkflowEditors();
     markSettingsDirty();
   });
 
@@ -1899,7 +1936,6 @@
     $("cfg-mod-days").value = c.retention.moderation_run_days;
     $("cfg-audit-days").value = c.retention.audit_days;
     renderQQAccountEditors();
-    renderQQWorkflowEditors();
     renderFeishuEditors();
     [
       "cfg-environment", "cfg-log-level", "cfg-secure-cookie", "cfg-admin-token",
@@ -1912,16 +1948,23 @@
     if (!state.config) return;
     var bots = collectQQConfiguration();
     var enabled = bots.filter(function (bot) { return bot.enabled; });
-    var recorders = enabled.filter(function (bot) { return bot.tasks.message_detection.record_only; });
-    var analyzers = enabled.filter(function (bot) { return bot.tasks.message_detection.analyze; });
-    var notices = enabled.filter(function (bot) { return bot.tasks.announcement_sync.enabled; });
+    var enabledBotIds = new Set(enabled.map(function (bot) { return "qq-bot:" + bot.id; }));
+    var resources = new Map((state.config.orchestration.resources || []).map(function (resource) { return [resource.id, resource]; }));
+    var assignments = (state.config.orchestration.edges || []).filter(function (edge) {
+      var resource = resources.get(edge.target);
+      return edge.enabled && enabledBotIds.has(edge.source) && resource && resource.enabled && resource.kind === "qq_group" && ["manages", "observes"].indexOf(edge.relation) >= 0 && edge.tasks;
+    });
+    var recorders = assignments.filter(function (edge) { return edge.tasks.message_detection.record_only; });
+    var analyzers = assignments.filter(function (edge) { return edge.tasks.message_detection.analyze; });
+    var notices = assignments.filter(function (edge) { return edge.tasks.announcement_sync.enabled; });
     var target = $("settings-review");
     target.replaceChildren();
     [
       ["QQ 账号", enabled.length + " / " + bots.length + " 已启用", "每个账号拥有独立连接与 Webhook"],
-      ["纯记录", recorders.length + " 个 Bot", $("cfg-message-archive-path").value || "data/group-message-records"],
-      ["消息分析", analyzers.length + " 个 Bot", "模型驱动：" + $("cfg-llm-driver").value],
-      ["公告同步", notices.length + " 个 Bot", "飞书账号：" + state.config.feishu.bots.length + " 个"],
+      ["群级分工", assignments.length + " 条连接", "在资源编排中逐群维护"],
+      ["纯记录", recorders.length + " 个群级任务", $("cfg-message-archive-path").value || "data/group-message-records"],
+      ["消息分析", analyzers.length + " 个群级任务", "模型驱动：" + $("cfg-llm-driver").value],
+      ["公告同步", notices.length + " 个群级任务", "飞书账号：" + state.config.feishu.bots.length + " 个"],
       ["安全模式", $("cfg-dry-run").checked ? "安全演练已开启" : "真实出站动作已允许", "保存后立即生效"],
       ["数据保留", $("cfg-retention-enabled").checked ? $("cfg-message-days").value + " 天" : "不自动清理", "SQLite 与按日 JSONL 使用同一期限"]
     ].forEach(function (item) {

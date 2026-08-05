@@ -81,10 +81,12 @@ stateDiagram-v2
 - 群和知识库保存在 `orchestration.resources`，当前资源类型为 `qq_group`、
   `feishu_group` 和 `knowledge_base`；
 - 多对多连接保存在 `orchestration.edges`，可表达管理、监听、归档、检索和同步；
+- QQ Bot→QQ群的 `manages` / `observes` 连接包含独立 `tasks`，是 `bot_id + group_id` 维度的
+  唯一事务配置来源；
 - 节点坐标保存在 `orchestration.layout`，不影响 Runtime 行为；
-- 只要配置中存在 QQ 群资源，后端模型就会把 QQ Bot 的 `manages` / `observes` 连接强制
-  同步回 `managed_group_ids`；画布、YAML 与 API 因而共享同一不变量，业务服务继续使用原有
-  配置接口，避免一次性重写稳定的事件处理链路；
+- 事件服务按收到的 `bot_id + group_id` 查找事务分工，定时器按连接分别调度，因此同一 Bot 在
+  不同群可以使用不同周期、窗口、阈值和公告目标；
+- 旧版 `managed_group_ids + bot.tasks` 在配置校验前自动迁移到资源与连接，保存后只保留新模型；
 - GUI 读取配置时获得基于完整有效配置生成的 SHA-256 修订号，保存时使用乐观并发校验；
   如果其他会话已修改配置，旧页面收到 409 而不会静默覆盖新设置；
 - 群详情通过受 GUI 会话保护的只读接口聚合 SQLite 中的消息、公告、分析和申请记录。

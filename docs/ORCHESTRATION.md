@@ -1,15 +1,16 @@
 # NeoQBot 资源编排指南
 
 资源编排把账号、群和知识资源放在同一张可连接的画布中。它负责表达“谁管理谁、数据流向
-哪里”，账号连接、模型参数和具体事务开关仍在系统设置中维护。
+哪里，以及某个 Bot 在某个群承担哪些事务”。账号连接和共享模型/政策参数仍在系统设置中维护，
+入群管理、消息记录与分析、公告同步等具体事务全部配置在 QQ Bot→QQ群连接上。
 
 ## 节点类型
 
 | 节点 | 用途 | 点击后的详情 |
 |---|---|---|
-| QQ Bot | NapCat / OneBot 真人 QQ 账号 | 连接状态、扫码登录、完整设置入口 |
+| QQ Bot | NapCat / OneBot 真人 QQ 账号 | 连接状态、扫码登录、账号设置入口、各群事务分工 |
 | 飞书 Bot | 飞书 CLI 登录态与文档操作账号 | CLI 状态、登录/退出、完整设置入口 |
-| QQ 群 | QQ 治理和消息采集范围 | 管理 Bot、消息、公告、风控分析、入群申请 |
+| QQ 群 | QQ 治理和消息采集范围 | 管理 Bot、逐 Bot 事务、消息、公告、风控分析、入群申请 |
 | 飞书群 | 飞书协作或通知目标 | 平台标识、说明和连接关系 |
 | 知识库 | 飞书、Notion、本地或其他知识资源 | Provider、访问地址、说明和连接关系 |
 
@@ -20,14 +21,44 @@
 
 | 连接 | 建议使用场景 | 对当前 Runtime 的影响 |
 |---|---|---|
-| 管理 `manages` | Bot 负责群治理、消息和公告事务 | QQ Bot → QQ 群会进入 `managed_group_ids` |
-| 监听 `observes` | Bot 只采集或观察群事件 | QQ Bot → QQ 群同样进入 Bot 群作用域 |
+| 管理 `manages` | Bot 负责群治理、消息和公告事务 | QQ Bot → QQ 群形成可配置事务的群级分工 |
+| 监听 `observes` | Bot 只采集或观察群事件 | 同样形成群级分工；若启用管理动作，诊断会提示关系语义不匹配 |
 | 归档 `archives_to` | 群或 Bot 将公告、记录写入飞书/知识库 | 连接到飞书 Bot 时可映射公告归档目标 |
 | 检索 `searches` | Bot 使用飞书 Bot 或知识库回答管理员查询 | 连接到飞书 Bot 时可映射检索账号 |
 | 同步 `syncs` | 表达通用同步或后续适配器的数据流 | 当前主要作为声明式关系保存 |
 
 一个 Bot 可以连接多个群，多个 Bot 也可以连接同一个群。业务记录使用 `bot_id + group_id`
-隔离，因此相同消息 ID 在不同 Bot 下不会冲突。
+隔离，因此相同消息 ID 在不同 Bot 下不会冲突。每条有效的 QQ Bot→QQ群连接都有独立 `tasks`：
+
+```yaml
+orchestration:
+  edges:
+    - id: recorder-observes-main
+      source: qq-bot:recorder
+      target: qq-group-main
+      relation: observes
+      enabled: true
+      tasks:
+        message_detection:
+          record_only: true
+          interval_minutes: 60
+    - id: moderator-manages-main
+      source: qq-bot:moderator
+      target: qq-group-main
+      relation: manages
+      enabled: true
+      tasks:
+        join_management:
+          execute_management: true
+          minimum_confidence: 0.92
+        message_detection:
+          analyze: true
+          handle: true
+          interval_minutes: 15
+```
+
+依赖项由配置模型补齐，例如 `analyze: true` 会同时启用消息事务与轮询检测；这只影响当前连接，
+不会修改该 Bot 连接的其他群。
 
 ## 典型拓扑
 
@@ -45,8 +76,8 @@ QQ Bot ──管理──> 社区主群
 记录 Bot ──监听──> 社区主群 <──管理── 审核 Bot
 ```
 
-记录 Bot 可以只开启“纯记录群消息”，审核 Bot 则开启入群审核或消息分析。两个账号使用独立
-Webhook、Token 和审计身份。
+在“社区主群”的连接上，记录 Bot 可以只开启“纯记录群消息”，审核 Bot 则开启入群审核或消息
+分析。两个账号使用独立 Webhook、Token 和审计身份；它们连接其他群时可以采用完全不同的事务。
 
 ### 公告归档与知识检索
 
@@ -58,16 +89,17 @@ QQ Bot ──管理──> QQ 群 ──归档──> 知识库
 
 ## 旧配置迁移
 
-首次打开资源编排时，GUI 会读取每个 QQ Bot 的 `managed_group_ids`：
+加载旧版配置时，后端会在校验前读取每个 QQ Bot 的 `managed_group_ids` 与 `tasks`：
 
 1. 为尚不存在的群号创建 QQ 群节点；
 2. 为 Bot 和群创建 `manages` 连接；
-3. 保留原有任务、Webhook 和管理员配置；
-4. 保存编排后写入 `orchestration.resources`、`orchestration.edges` 和
-   `orchestration.layout`。
+3. 把原有 Bot 级 `tasks` 深拷贝到该 Bot 的每条 QQ 群连接，确保旧行为不丢失；
+4. Webhook、Token 和管理员配置继续保留在 Bot 账号设置中；
+5. 再次保存时只写入 `orchestration.resources`、`orchestration.edges[].tasks` 和
+   `orchestration.layout`，不再持久化旧字段。
 
-只要配置中存在 QQ 群资源，后端会把有效的 `manages` / `observes` 连接重新同步到
-`managed_group_ids`。因此 YAML、GUI 和 API 不会长期形成互相矛盾的群归属。
+若旧版启用了事务却没有任何可迁移的群连接，配置会明确拒绝加载并提示先补充群归属，避免把有
+副作用的任务静默扩散到未知范围。新配置中，编排边是唯一权威来源，不再维护 Bot 级镜像字段。
 
 ## 保存与并发修改
 
@@ -78,8 +110,9 @@ GUI 每次读取配置时都会取得一个修订号。保存时如果其他标�
 ## 操作建议
 
 - 先创建和配置 Bot，再创建群和知识库节点；
+- 连接 QQ Bot 与 QQ 群后，在任一端的右侧检查器打开“群内事务分工”逐群配置；
 - 使用搜索框按名称、内部 ID、群号或节点类型快速定位；
 - 大量导入旧群号后先使用“自动布局”，再人工调整重点链路；
 - 首次真实运行保持 `dry_run: true`，确认群详情中的消息、公告与分析记录正确；
-- 删除或修改 Bot ID 时通过 GUI 操作，GUI 会同步迁移或清理相应连接和飞书引用；
+- 删除或修改 Bot ID 时通过 GUI 操作，GUI 会同步迁移或清理相应连接和群级飞书引用；
 - 知识库连接当前首先用于拓扑和配置表达，真正的数据写入仍取决于对应飞书 CLI 或后续适配器。

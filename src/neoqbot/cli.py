@@ -122,7 +122,7 @@ def main() -> None:
     )
     if args.command == "serve":
         uvicorn.run(
-            create_app(settings),
+            create_app(settings, config_path=args.config),
             host=settings.app.host,
             port=settings.app.port,
             log_level=settings.app.log_level.lower(),

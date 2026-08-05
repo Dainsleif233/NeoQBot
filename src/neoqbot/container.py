@@ -74,18 +74,15 @@ def build_container(settings: Settings) -> Container:
     search_services: dict[str, SearchService] = {}
     for bot in qq_bots:
         client = qq_clients[bot.id]
-        target_feishu_id = bot.tasks.announcement_sync.feishu_bot_id or first_enabled_feishu.id
-        target_feishu = settings.feishu_bot(target_feishu_id) or first_enabled_feishu
-        target_gateway = feishu_clients.get(target_feishu.id, feishu)
-        search_feishu_id = bot.search_feishu_bot_id or target_feishu.id
-        search_feishu = settings.feishu_bot(search_feishu_id) or target_feishu
-        search_gateway = feishu_clients.get(search_feishu.id, target_gateway)
+        search_feishu_id = bot.search_feishu_bot_id or first_enabled_feishu.id
+        search_feishu = settings.feishu_bot(search_feishu_id) or first_enabled_feishu
+        search_gateway = feishu_clients.get(search_feishu.id, feishu)
         join_services[bot.id] = JoinApprovalService(settings, database, engine, client, bot)
         moderation_services[bot.id] = ModerationService(
             settings, database, engine, client, bot, message_recorder
         )
         announcement_services[bot.id] = AnnouncementService(
-            settings, database, client, target_gateway, bot, target_feishu
+            settings, database, client, feishu_clients, bot, first_enabled_feishu
         )
         search_services[bot.id] = SearchService(
             settings, search_gateway, client, bot, search_feishu

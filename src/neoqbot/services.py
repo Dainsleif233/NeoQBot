@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime, timedelta
 
-from .config import FeishuBotConfig, QQBotConfig, Settings
+from .config import FeishuBotConfig, QQBotConfig, QQJoinTaskConfig, Settings
 from .database import Database
 from .models import (
     GroupMessage,
@@ -35,11 +35,12 @@ class JoinApprovalService:
             raise ValueError("No QQ Bot is configured")
 
     async def handle(self, request: JoinRequest) -> str:
-        task = self.bot.tasks.join_management
+        assignment = self.settings.qq_group_assignment(self.bot.id, request.group_id)
+        if assignment is None:
+            return "unmanaged_group"
+        task = assignment.tasks.join_management
         if not task.enabled or not task.detect_requests:
             return "disabled"
-        if request.group_id not in self.bot.managed_group_ids:
-            return "unmanaged_group"
         if not self.database.save_join_request(request):
             return "duplicate"
         if not task.execute_management:
@@ -73,7 +74,7 @@ class JoinApprovalService:
                 await self.qq.approve_join(request, approve=False, reason=decision.reason[:120])
                 action_status = "dry_run_reject" if self.settings.app.dry_run else "rejected"
             else:
-                await self._notify_manual_review(request, decision, threshold_met)
+                await self._notify_manual_review(request, decision, threshold_met, task)
         except Exception as exc:
             logger.exception("Join decision action failed")
             action_status = "action_failed"
@@ -103,13 +104,17 @@ class JoinApprovalService:
         return action_status
 
     async def _notify_manual_review(
-        self, request: JoinRequest, decision: JoinDecision, threshold_met: bool
+        self,
+        request: JoinRequest,
+        decision: JoinDecision,
+        threshold_met: bool,
+        task: QQJoinTaskConfig,
     ) -> None:
         if not threshold_met:
             execution_note = "置信度不足"
-        elif decision.decision == "approve" and not self.bot.tasks.join_management.auto_approve:
+        elif decision.decision == "approve" and not task.auto_approve:
             execution_note = "自动同意未启用"
-        elif decision.decision == "reject" and not self.bot.tasks.join_management.auto_reject:
+        elif decision.decision == "reject" and not task.auto_reject:
             execution_note = "自动拒绝未启用"
         else:
             execution_note = "模型要求人工复核"
@@ -144,12 +149,13 @@ class ModerationService:
             raise ValueError("No QQ Bot is configured")
 
     def capture(self, message: GroupMessage) -> bool:
-        task = self.bot.tasks.message_detection
+        assignment = self.settings.qq_group_assignment(self.bot.id, message.group_id)
+        if assignment is None:
+            return False
+        task = assignment.tasks.message_detection
         if not task.enabled or not (
             task.record_only or task.realtime_detection or task.polling_detection
         ):
-            return False
-        if message.group_id not in self.bot.managed_group_ids:
             return False
         saved = self.database.save_message(message)
         if saved and task.record_only and self.recorder is not None:
@@ -167,7 +173,10 @@ class ModerationService:
         return saved
 
     async def run_group(self, group_id: str, window_end: datetime | None = None) -> str:
-        task = self.bot.tasks.message_detection
+        assignment = self.settings.qq_group_assignment(self.bot.id, group_id)
+        if assignment is None:
+            return "unmanaged_group"
+        task = assignment.tasks.message_detection
         if not task.enabled or not task.polling_detection:
             return "disabled"
         end = (window_end or datetime.now(UTC)).astimezone(UTC)
@@ -294,21 +303,29 @@ class AnnouncementService:
         settings: Settings,
         database: Database,
         qq: QQGateway,
-        feishu: FeishuGateway,
+        feishu: FeishuGateway | dict[str, FeishuGateway],
         bot: QQBotConfig | None = None,
         feishu_config: FeishuBotConfig | None = None,
     ) -> None:
         self.settings = settings
         self.database = database
         self.qq = qq
-        self.feishu = feishu
+        self.feishu_clients = feishu if isinstance(feishu, dict) else {}
         self.bot = bot or settings.qq_bot()
-        self.feishu_config = feishu_config or settings.feishu_bot()
+        self.default_feishu_config = feishu_config or next(
+            (item for item in settings.effective_feishu_bots() if item.enabled),
+            settings.feishu_bot(),
+        )
+        if not isinstance(feishu, dict) and self.default_feishu_config is not None:
+            self.feishu_clients[self.default_feishu_config.id] = feishu
         if self.bot is None:
             raise ValueError("No QQ Bot is configured")
 
     async def sync_group(self, group_id: str) -> dict[str, object]:
-        if not self.bot.tasks.announcement_sync.enabled:
+        assignment = self.settings.qq_group_assignment(self.bot.id, group_id)
+        if assignment is None:
+            return {"fetched": 0, "new": 0, "synced": 0, "failed": 0}
+        if not assignment.tasks.announcement_sync.enabled:
             return {"fetched": 0, "new": 0, "synced": 0, "failed": 0}
         announcements = []
         fetch_error = ""
@@ -331,7 +348,8 @@ class AnnouncementService:
         return stats
 
     async def retry_pending(self, group_id: str | None = None) -> dict[str, int]:
-        if self.feishu_config is None or not self.feishu_config.enabled:
+        feishu_config, feishu = self._feishu_target(group_id)
+        if feishu_config is None or feishu is None or not feishu_config.enabled:
             return {"synced": 0, "failed": 0}
         synced = 0
         failed = 0
@@ -339,7 +357,7 @@ class AnnouncementService:
             group_id=group_id, bot_id=self.bot.id
         ):
             try:
-                await self.feishu.archive_announcement(announcement)
+                await feishu.archive_announcement(announcement)
                 self.database.mark_announcement_sync(row_id, True)
                 synced += 1
             except Exception as exc:
@@ -347,6 +365,19 @@ class AnnouncementService:
                 self.database.mark_announcement_sync(row_id, False, str(exc))
                 failed += 1
         return {"synced": synced, "failed": failed}
+
+    def _feishu_target(
+        self, group_id: str | None
+    ) -> tuple[FeishuBotConfig | None, FeishuGateway | None]:
+        target_id = ""
+        if group_id is not None:
+            assignment = self.settings.qq_group_assignment(self.bot.id, group_id)
+            if assignment is not None:
+                target_id = assignment.tasks.announcement_sync.feishu_bot_id
+        target = self.settings.feishu_bot(target_id) if target_id else self.default_feishu_config
+        if target is None:
+            return None, None
+        return target, self.feishu_clients.get(target.id)
 
 
 class SearchService:

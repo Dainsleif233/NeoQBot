@@ -35,8 +35,8 @@ configuration, auditing, and orchestration.
 - **Visual resource graph** for QQ bots, Feishu bots, QQ groups, Feishu groups, and knowledge bases.
 - **Many-to-many ownership** where one bot can manage several groups and several bots can cooperate
   on the same group.
-- **Granular task controls** for join management, record-only ingestion, analysis, handling, and
-  announcement synchronization.
+- **Per-group task assignments** on every Bot-to-group edge for join management, record-only
+  ingestion, analysis, handling, and announcement synchronization.
 - **Group workbench** for messages, announcements, join requests, moderation reports, and managers.
 - **Auditable control plane** backed by SQLite records for jobs, configuration changes, login events,
   and conflicts.
@@ -69,15 +69,17 @@ The orchestration canvas supports five node types:
 
 | Node | Purpose |
 | --- | --- |
-| QQ Bot | OneBot / NapCat account, QR login, and task configuration |
+| QQ Bot | OneBot / NapCat account, QR login, and connection settings |
 | Feishu Bot | CLI session, archiving, and search capabilities |
-| QQ Group | Messages, announcements, reviews, analysis, and ownership |
+| QQ Group | Messages, announcements, reviews, analysis, ownership, and Bot-specific tasks |
 | Feishu Group | Collaboration, notification, and knowledge-flow target |
 | Knowledge Base | Policies, playbooks, answers, or external knowledge resources |
 
 Edges use the relations `manages`, `observes`, `archives_to`, `searches`, and `syncs`. The graph is
-the canonical source for QQ managed-group relationships and synchronizes effective bot settings when
-saved. See the [orchestration guide](docs/ORCHESTRATION.md) for details.
+the only canonical source for QQ group ownership and task assignments. A `tasks` block on each
+`manages` or `observes` edge means “what this Bot does in this group,” so one Bot can use different
+switches, schedules, thresholds, and archive targets in different groups. See the
+[orchestration guide](docs/ORCHESTRATION.md) for details.
 
 ## Quick start
 
@@ -216,6 +218,7 @@ The project name, Python package, distribution, CLI, service, and environment na
 uv sync --extra dev
 uv run ruff check .
 uv run ruff format --check src
+uv run python -m unittest discover -s tests -v
 node --check src/neoqbot/web/app.js
 ```
 

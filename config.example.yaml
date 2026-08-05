@@ -46,36 +46,9 @@ qq:
       webui_public_url: ""
       webui_public_port: 6099
       qrcode_path: /app/napcat-cache/qrcode.png
-      # managed_group_ids 由下方编排图中的 manages/observes 连接生成。
-      managed_group_ids: []
       administrator_qq_ids: ["10001"]
       announcement_actions: [get_group_notice, _get_group_notice]
       search_feishu_bot_id: ""
-      tasks:
-        join_management:
-          enabled: false
-          detect_requests: false
-          execute_management: false
-          auto_approve: false
-          auto_reject: false
-          minimum_confidence: 0.88
-        message_detection:
-          enabled: false
-          record_only: false
-          realtime_detection: false
-          polling_detection: false
-          analyze: false
-          handle: false
-          interval_minutes: 30
-          window_minutes: 5
-          risk_threshold: 0.7
-          max_messages_per_run: 300
-        announcement_sync:
-          enabled: false
-          auto_sync: false
-          sync_interval_minutes: 30
-          sync_on_startup: false
-          feishu_bot_id: ""
 
 llm:
   # rules 可离线联调；生产建议切到 openai_compatible 并配置 Agnes AI。
@@ -160,6 +133,32 @@ orchestration:
       target: qq-group-main
       relation: manages
       enabled: true
+      # 事务属于这条 Bot→群连接。同一 Bot 连接其他群时可使用完全不同的任务组合。
+      tasks:
+        join_management:
+          enabled: false
+          detect_requests: false
+          execute_management: false
+          auto_approve: false
+          auto_reject: false
+          minimum_confidence: 0.88
+        message_detection:
+          enabled: false
+          record_only: false
+          realtime_detection: false
+          polling_detection: false
+          analyze: false
+          handle: false
+          interval_minutes: 30
+          window_minutes: 5
+          risk_threshold: 0.7
+          max_messages_per_run: 300
+        announcement_sync:
+          enabled: false
+          auto_sync: false
+          sync_interval_minutes: 30
+          sync_on_startup: false
+          feishu_bot_id: ""
   layout: {}
 
 runtime:

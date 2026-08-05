@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
+import re
 import tempfile
 from ipaddress import ip_network
 from pathlib import Path
@@ -86,13 +88,12 @@ class QQConnectionConfig(BaseModel):
     webui_public_url: str = ""
     webui_public_port: int = Field(default=6099, ge=1, le=65535)
     qrcode_path: str = "data/napcat-cache/qrcode.png"
-    managed_group_ids: list[str] = Field(default_factory=list)
     administrator_qq_ids: list[str] = Field(default_factory=list)
     announcement_actions: list[str] = Field(
         default_factory=lambda: ["get_group_notice", "_get_group_notice"]
     )
 
-    @field_validator("managed_group_ids", "administrator_qq_ids", mode="before")
+    @field_validator("administrator_qq_ids", mode="before")
     @classmethod
     def ids_as_strings(cls, value: object) -> object:
         if isinstance(value, list):
@@ -167,7 +168,6 @@ class QQTaskConfig(BaseModel):
 class QQBotConfig(QQConnectionConfig):
     id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
     name: str = Field(default="QQ Bot", min_length=1, max_length=80)
-    tasks: QQTaskConfig = Field(default_factory=QQTaskConfig)
     search_feishu_bot_id: str = ""
 
 
@@ -284,6 +284,17 @@ class OrchestrationEdgeConfig(BaseModel):
     target: str = Field(min_length=1, max_length=96)
     relation: Literal["manages", "observes", "archives_to", "searches", "syncs"] = "manages"
     enabled: bool = True
+    tasks: QQTaskConfig | None = Field(default=None, exclude_if=lambda value: value is None)
+
+
+class QQGroupAssignment(BaseModel):
+    edge_id: str
+    bot_id: str
+    resource_id: str
+    group_id: str
+    group_name: str
+    relation: Literal["manages", "observes"]
+    tasks: QQTaskConfig
 
 
 class OrchestrationConfig(BaseModel):
@@ -338,6 +349,19 @@ class GuiConfig(BaseModel):
     allow_sensitive_settings_edits: bool = False
 
 
+def _migration_identifier(value: str, fallback: str, limit: int) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_-]+", "-", value).strip("-") or fallback
+    return cleaned[:limit]
+
+
+def _legacy_tasks_enabled(value: object) -> bool:
+    if isinstance(value, dict):
+        return any(_legacy_tasks_enabled(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_legacy_tasks_enabled(item) for item in value)
+    return value is True
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="NEOQBOT_",
@@ -358,35 +382,141 @@ class Settings(BaseSettings):
     retention: RetentionConfig = Field(default_factory=RetentionConfig)
     gui: GuiConfig = Field(default_factory=GuiConfig)
 
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_qq_tasks(cls, values: object) -> object:
+        """Move legacy bot-wide groups and tasks onto bot-to-group orchestration edges."""
+        if not isinstance(values, dict):
+            return values
+        data = copy.deepcopy(values)
+        qq = data.get("qq")
+        if not isinstance(qq, dict) or not isinstance(qq.get("bots"), list):
+            return data
+        orchestration = data.setdefault("orchestration", {})
+        if not isinstance(orchestration, dict):
+            return data
+        resources = orchestration.setdefault("resources", [])
+        edges = orchestration.setdefault("edges", [])
+        orchestration.setdefault("layout", {})
+        if not isinstance(resources, list) or not isinstance(edges, list):
+            return data
+
+        used_resource_ids = {
+            str(resource.get("id"))
+            for resource in resources
+            if isinstance(resource, dict) and resource.get("id")
+        }
+        used_edge_ids = {
+            str(edge.get("id")) for edge in edges if isinstance(edge, dict) and edge.get("id")
+        }
+        qq_resources = {
+            str(resource.get("external_id")): str(resource.get("id"))
+            for resource in resources
+            if isinstance(resource, dict)
+            and resource.get("kind") == "qq_group"
+            and resource.get("external_id")
+            and resource.get("id")
+        }
+
+        def unique_identifier(base: str, used: set[str], limit: int) -> str:
+            candidate = base[:limit]
+            suffix = 2
+            while candidate in used:
+                marker = f"-{suffix}"
+                candidate = f"{base[: limit - len(marker)]}{marker}"
+                suffix += 1
+            used.add(candidate)
+            return candidate
+
+        for raw_bot in qq["bots"]:
+            if not isinstance(raw_bot, dict) or not raw_bot.get("id"):
+                continue
+            bot_id = str(raw_bot["id"])
+            source = f"qq-bot:{bot_id}"
+            legacy_tasks = raw_bot.pop("tasks", None)
+            legacy_groups = raw_bot.pop("managed_group_ids", [])
+            assignment_edges = [
+                edge
+                for edge in edges
+                if isinstance(edge, dict)
+                and edge.get("source") == source
+                and edge.get("target") in set(qq_resources.values())
+                and edge.get("relation", "manages") in {"manages", "observes"}
+            ]
+            if not assignment_edges and isinstance(legacy_groups, list):
+                for raw_group_id in legacy_groups:
+                    group_id = str(raw_group_id).strip()
+                    if not group_id:
+                        continue
+                    resource_id = qq_resources.get(group_id)
+                    if resource_id is None:
+                        base = _migration_identifier(
+                            f"qq-group-{group_id}", "qq-group-migrated", 64
+                        )
+                        resource_id = unique_identifier(base, used_resource_ids, 64)
+                        resources.append(
+                            {
+                                "id": resource_id,
+                                "kind": "qq_group",
+                                "name": f"QQ群 {group_id}",
+                                "external_id": group_id,
+                                "description": "由旧版 managed_group_ids 自动迁移",
+                                "enabled": True,
+                                "metadata": {},
+                            }
+                        )
+                        qq_resources[group_id] = resource_id
+                    edge_base = _migration_identifier(
+                        f"{bot_id}-manages-{resource_id}", "migrated-assignment", 96
+                    )
+                    edge = {
+                        "id": unique_identifier(edge_base, used_edge_ids, 96),
+                        "source": source,
+                        "target": resource_id,
+                        "relation": "manages",
+                        "enabled": True,
+                    }
+                    edges.append(edge)
+                    assignment_edges.append(edge)
+            if isinstance(legacy_tasks, dict):
+                for edge in assignment_edges:
+                    if edge.get("tasks") is None:
+                        edge["tasks"] = copy.deepcopy(legacy_tasks)
+                if _legacy_tasks_enabled(legacy_tasks) and not assignment_edges:
+                    raise ValueError(f"qq.bots.{bot_id}.tasks 已启用，但没有可迁移的 QQ 群编排连接")
+        return data
+
     @model_validator(mode="after")
     def validate_orchestration(self) -> Settings:
-        resource_ids = {resource.id for resource in self.orchestration.resources}
-        bot_node_ids = {f"qq-bot:{bot.id}" for bot in self.effective_qq_bots()} | {
+        resources = {resource.id: resource for resource in self.orchestration.resources}
+        resource_ids = set(resources)
+        qq_bot_node_ids = {f"qq-bot:{bot.id}" for bot in self.effective_qq_bots()}
+        bot_node_ids = qq_bot_node_ids | {
             f"feishu-bot:{bot.id}" for bot in self.effective_feishu_bots()
         }
         valid_node_ids = resource_ids | bot_node_ids
+        active_assignments: set[tuple[str, str]] = set()
         for edge in self.orchestration.edges:
             if edge.source == edge.target:
                 raise ValueError(f"编排连接 {edge.id} 不能连接节点自身")
             if edge.source not in valid_node_ids or edge.target not in valid_node_ids:
                 raise ValueError(f"编排连接 {edge.id} 指向未知节点")
-        qq_groups = {
-            resource.id: resource.external_id
-            for resource in self.orchestration.resources
-            if resource.kind == "qq_group" and resource.enabled and resource.external_id
-        }
-        for bot in self.qq.bots:
-            source = f"qq-bot:{bot.id}"
-            bot.managed_group_ids = sorted(
-                {
-                    qq_groups[edge.target]
-                    for edge in self.orchestration.edges
-                    if edge.enabled
-                    and edge.source == source
-                    and edge.target in qq_groups
-                    and edge.relation in {"manages", "observes"}
-                }
+            target = resources.get(edge.target)
+            is_assignment = (
+                edge.source in qq_bot_node_ids
+                and target is not None
+                and target.kind == "qq_group"
+                and edge.relation in {"manages", "observes"}
             )
+            if is_assignment:
+                edge.tasks = edge.tasks or QQTaskConfig()
+                assignment_key = (edge.source, edge.target)
+                if edge.enabled and assignment_key in active_assignments:
+                    raise ValueError(f"QQ Bot 与 QQ 群之间只能有一条启用的事务分工连接：{edge.id}")
+                if edge.enabled:
+                    active_assignments.add(assignment_key)
+            elif edge.tasks is not None:
+                raise ValueError(f"编排连接 {edge.id} 不是 QQ Bot 到 QQ 群，不能配置 QQ 事务")
         return self
 
     def effective_qq_bots(self) -> list[QQBotConfig]:
@@ -407,15 +537,60 @@ class Settings(BaseSettings):
             return bots[0] if bots else None
         return next((bot for bot in bots if bot.id == bot_id), None)
 
-    def managed_group_ids(self) -> list[str]:
-        return sorted(
-            {
-                group_id
-                for bot in self.effective_qq_bots()
-                if bot.enabled
-                for group_id in bot.managed_group_ids
-            }
+    def qq_group_assignments(
+        self, bot_id: str | None = None, *, include_disabled: bool = False
+    ) -> list[QQGroupAssignment]:
+        bots = {bot.id: bot for bot in self.effective_qq_bots()}
+        resources = {resource.id: resource for resource in self.orchestration.resources}
+        assignments: list[QQGroupAssignment] = []
+        for edge in self.orchestration.edges:
+            if not edge.source.startswith("qq-bot:") or edge.relation not in {
+                "manages",
+                "observes",
+            }:
+                continue
+            edge_bot_id = edge.source.removeprefix("qq-bot:")
+            bot = bots.get(edge_bot_id)
+            resource = resources.get(edge.target)
+            if bot is None or resource is None or resource.kind != "qq_group":
+                continue
+            if bot_id is not None and edge_bot_id != bot_id:
+                continue
+            if not include_disabled and (
+                not bot.enabled
+                or not edge.enabled
+                or not resource.enabled
+                or not resource.external_id
+            ):
+                continue
+            assignments.append(
+                QQGroupAssignment(
+                    edge_id=edge.id,
+                    bot_id=edge_bot_id,
+                    resource_id=resource.id,
+                    group_id=resource.external_id,
+                    group_name=resource.name,
+                    relation=edge.relation,
+                    tasks=edge.tasks or QQTaskConfig(),
+                )
+            )
+        return sorted(assignments, key=lambda item: (item.bot_id, item.group_id, item.edge_id))
+
+    def qq_group_assignment(self, bot_id: str, group_id: str) -> QQGroupAssignment | None:
+        return next(
+            (
+                assignment
+                for assignment in self.qq_group_assignments(bot_id)
+                if assignment.group_id == group_id
+            ),
+            None,
         )
+
+    def bot_group_ids(self, bot_id: str) -> list[str]:
+        return sorted({assignment.group_id for assignment in self.qq_group_assignments(bot_id)})
+
+    def managed_group_ids(self) -> list[str]:
+        return sorted({assignment.group_id for assignment in self.qq_group_assignments()})
 
     @classmethod
     def load(cls, path: str | Path | None = None) -> Settings:
@@ -488,10 +663,15 @@ class Settings(BaseSettings):
         qq_bots = [bot for bot in self.effective_qq_bots() if bot.enabled]
         if not qq_bots:
             warnings.append("没有启用任何 QQ Bot")
+        assignments = self.qq_group_assignments()
+        assignments_by_bot = {
+            bot.id: [assignment for assignment in assignments if assignment.bot_id == bot.id]
+            for bot in qq_bots
+        }
         for bot in qq_bots:
             prefix = f"qq.bots.{bot.id}"
-            if not bot.managed_group_ids:
-                errors.append(f"{prefix}.managed_group_ids 不能为空")
+            if not assignments_by_bot[bot.id]:
+                errors.append(f"{prefix} 必须在资源编排中至少连接一个已启用且填写群号的 QQ 群")
             if not bot.administrator_qq_ids:
                 errors.append(f"{prefix}.administrator_qq_ids 不能为空")
             onebot_token = resolve_secret(bot.access_token, bot.access_token_file)
@@ -507,16 +687,11 @@ class Settings(BaseSettings):
         feishu_bots = self.effective_feishu_bots()
         default_feishu = next((bot for bot in feishu_bots if bot.enabled), feishu_bots[0])
         archive_targets = {
-            bot.tasks.announcement_sync.feishu_bot_id or default_feishu.id
-            for bot in qq_bots
-            if bot.tasks.announcement_sync.enabled
+            assignment.tasks.announcement_sync.feishu_bot_id or default_feishu.id
+            for assignment in assignments
+            if assignment.tasks.announcement_sync.enabled
         }
-        search_targets = {
-            bot.search_feishu_bot_id
-            or bot.tasks.announcement_sync.feishu_bot_id
-            or default_feishu.id
-            for bot in qq_bots
-        }
+        search_targets = {bot.search_feishu_bot_id or default_feishu.id for bot in qq_bots}
         for bot in feishu_bots:
             if not bot.enabled:
                 continue
@@ -526,12 +701,22 @@ class Settings(BaseSettings):
             if bot.id in search_targets and not bot.command_templates.get("search"):
                 errors.append(f"{prefix}.command_templates.search 未配置")
         feishu_ids = {bot.id for bot in feishu_bots}
-        for bot in qq_bots:
-            announcement_target = bot.tasks.announcement_sync.feishu_bot_id
+        for assignment in assignments:
+            announcement_target = assignment.tasks.announcement_sync.feishu_bot_id
             if announcement_target and announcement_target not in feishu_ids:
                 errors.append(
-                    f"qq.bots.{bot.id}.tasks.announcement_sync.feishu_bot_id 指向未知飞书 Bot"
+                    f"orchestration.edges.{assignment.edge_id}.tasks.announcement_sync."
+                    "feishu_bot_id 指向未知飞书 Bot"
                 )
+            if (
+                assignment.relation == "observes"
+                and assignment.tasks.join_management.execute_management
+            ):
+                warnings.append(
+                    f"编排连接 {assignment.edge_id} 是 observes，但启用了入群管理执行；"
+                    "建议改为 manages 以准确表达权限边界"
+                )
+        for bot in qq_bots:
             if bot.search_feishu_bot_id and bot.search_feishu_bot_id not in feishu_ids:
                 errors.append(f"qq.bots.{bot.id}.search_feishu_bot_id 指向未知飞书 Bot")
         admin_api_token = resolve_secret(self.app.admin_api_token, self.app.admin_api_token_file)
@@ -542,7 +727,7 @@ class Settings(BaseSettings):
         if self.app.dry_run:
             warnings.append("app.dry_run=true，所有 QQ 出站动作均被抑制")
         if self.join_approval.auto_reject or any(
-            bot.tasks.join_management.auto_reject for bot in qq_bots
+            assignment.tasks.join_management.auto_reject for assignment in assignments
         ):
             warnings.append("join_approval.auto_reject=true，建议保持人工拒绝")
         bootstrap_password = resolve_secret(

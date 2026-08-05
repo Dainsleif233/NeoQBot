@@ -30,7 +30,7 @@ NeoQBot 是一个自托管的机器人与群组运营平台。它通过 OneBot 1
 
 - **网状资源编排**：以类似节点编辑器的方式连接多个 QQ Bot、飞书 Bot、QQ群、飞书群和知识库。
 - **多账号与多群协作**：一个 Bot 可管理多个群，多个 Bot 也可共同观察或管理同一群。
-- **分级事务配置**：分别启用入群管理、纯记录、消息分析、风险处理和公告同步。
+- **群级事务分工**：在每条 Bot→群连接上分别启用入群管理、纯记录、消息分析、风险处理和公告同步。
 - **群组工作台**：集中查看群消息、公告、入群请求、分析记录以及当前管理关系。
 - **可审计控制面**：所有关键任务、配置更新、登录和冲突均写入 SQLite 审计记录。
 - **安全配置保存**：敏感字段遮罩、环境变量注入、配置版本冲突检测和原子写入。
@@ -59,14 +59,15 @@ flowchart LR
 
 | 节点 | 用途 |
 | --- | --- |
-| QQ Bot | OneBot / NapCat 账号、二维码登录、事务配置 |
+| QQ Bot | OneBot / NapCat 账号、二维码登录和连接参数 |
 | 飞书 Bot | CLI 登录态、归档和搜索能力 |
-| QQ群 | 消息、公告、审核、分析与管理关系 |
+| QQ群 | 消息、公告、审核、分析，以及各 Bot 在本群的事务分工 |
 | 飞书群 | 协作、通知与知识流转目标 |
 | 知识库 | 政策、手册、问答或外部知识资源 |
 
 连接关系包括 `manages`、`observes`、`archives_to`、`searches` 和 `syncs`。编排配置是 QQ
-托管群关系的权威来源，保存时会同步到各 Bot 的有效配置。
+群归属和事务分工的唯一权威来源；`manages` / `observes` 边上的 `tasks` 表示“这个 Bot 在这个群
+承担哪些事务”，因此同一 Bot 在不同群可以使用不同的开关、周期、阈值和公告目标。
 
 完整说明见 [资源编排指南](docs/ORCHESTRATION.md)。
 
@@ -200,6 +201,7 @@ docs/                                架构、编排和飞书 CLI 文档
 uv sync --extra dev
 uv run ruff check .
 uv run ruff format --check src
+uv run python -m unittest discover -s tests -v
 node --check src/neoqbot/web/app.js
 ```
 

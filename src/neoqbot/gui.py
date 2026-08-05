@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import os
 import secrets
 import time
 from collections.abc import Awaitable, Callable
@@ -178,8 +177,10 @@ def register_gui(
     get_container: Callable[[], Container],
     get_settings: Callable[[], Settings],
     reload_settings: Callable[[Settings], Awaitable[list[str]]],
+    config_path: str | Path,
 ) -> None:
     web_root = Path(__file__).with_name("web")
+    configuration_path = Path(config_path)
     app.mount("/gui/assets", StaticFiles(directory=web_root), name="gui-assets")
     login_failures = FailureLimiter()
 
@@ -448,6 +449,16 @@ def register_gui(
             if edge.enabled
             for endpoint in (edge.source, edge.target)
         }
+        assignments = settings.qq_group_assignments()
+
+        def task_flags(bot_id: str) -> dict[str, bool]:
+            scoped = [item for item in assignments if item.bot_id == bot_id]
+            return {
+                "join_management": any(item.tasks.join_management.enabled for item in scoped),
+                "message_detection": any(item.tasks.message_detection.enabled for item in scoped),
+                "announcement_sync": any(item.tasks.announcement_sync.enabled for item in scoped),
+            }
+
         return {
             "version": __version__,
             "environment": settings.app.environment,
@@ -480,8 +491,8 @@ def register_gui(
                     "id": bot.id,
                     "name": bot.name,
                     "enabled": bot.enabled,
-                    "groups": bot.managed_group_ids,
-                    "tasks": bot.tasks.model_dump(mode="json"),
+                    "groups": settings.bot_group_ids(bot.id),
+                    "task_presence": task_flags(bot.id),
                 }
                 for bot in settings.effective_qq_bots()
             ],
@@ -524,16 +535,19 @@ def register_gui(
             updated = Settings.model_validate(merged)
         except Exception as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        config_path = os.getenv("NEOQBOT_CONFIG", "config.yaml")
         try:
-            updated.save(config_path)
+            updated.save(configuration_path)
             restart_required = await reload_settings(updated)
         except OSError as exc:
             raise HTTPException(status_code=500, detail=f"配置文件写入失败：{exc}") from exc
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"配置已写入，但热加载失败：{exc}") from exc
         get_container().database.audit(
-            "gui_settings", "saved", "configuration", config_path, {"restart": restart_required}
+            "gui_settings",
+            "saved",
+            "configuration",
+            str(configuration_path),
+            {"restart": restart_required},
         )
         return {
             "ok": True,
@@ -591,24 +605,27 @@ def register_gui(
             ),
             None,
         )
-        manager_ids = {
-            bot.id for bot in settings.effective_qq_bots() if group_id in bot.managed_group_ids
-        }
-        if resource is not None:
-            manager_ids.update(
-                edge.source.removeprefix("qq-bot:")
-                for edge in settings.orchestration.edges
-                if edge.enabled
-                and edge.target == resource.id
-                and edge.relation in {"manages", "observes"}
-                and edge.source.startswith("qq-bot:")
-            )
+        assignments = [
+            assignment
+            for assignment in settings.qq_group_assignments(include_disabled=True)
+            if assignment.group_id == group_id
+            and (resource is None or assignment.resource_id == resource.id)
+        ]
+        manager_ids = {assignment.bot_id for assignment in assignments}
         managers = [
             {
                 "id": bot.id,
                 "name": bot.name,
                 "enabled": bot.enabled,
-                "tasks": bot.tasks.model_dump(mode="json"),
+                "assignments": [
+                    {
+                        "edge_id": assignment.edge_id,
+                        "relation": assignment.relation,
+                        "tasks": assignment.tasks.model_dump(mode="json"),
+                    }
+                    for assignment in assignments
+                    if assignment.bot_id == bot.id
+                ],
             }
             for bot in settings.effective_qq_bots()
             if bot.id in manager_ids
@@ -814,7 +831,7 @@ def register_gui(
                     "webui_public_port": bot.webui_public_port,
                     "qrcode_available": await asyncio.to_thread(Path(bot.qrcode_path).is_file),
                     "webui_token_available": webui_token_available,
-                    "tasks": bot.tasks.model_dump(mode="json"),
+                    "assignment_count": len(get_settings().bot_group_ids(bot.id)),
                 }
             )
         primary = results[0]

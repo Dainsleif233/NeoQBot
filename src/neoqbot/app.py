@@ -6,6 +6,7 @@ import hmac
 import json
 import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
@@ -48,9 +49,9 @@ def _verify_onebot_auth(
     return False
 
 
-def create_app(settings: Settings | None = None) -> FastAPI:
-    config_path = os.getenv("NEOQBOT_CONFIG", "config.yaml")
-    resolved_settings = settings or Settings.load(config_path)
+def create_app(settings: Settings | None = None, config_path: str | Path | None = None) -> FastAPI:
+    resolved_config_path = Path(config_path or os.getenv("NEOQBOT_CONFIG", "config.yaml"))
+    resolved_settings = settings or Settings.load(resolved_config_path)
     security_errors = resolved_settings.deployment_security_errors()
     if security_errors:
         raise RuntimeError("Unsafe NeoQBot deployment configuration: " + "; ".join(security_errors))
@@ -299,6 +300,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             get_container=lambda: container,
             get_settings=lambda: resolved_settings,
             reload_settings=reload_runtime,
+            config_path=resolved_config_path,
         )
 
     return app

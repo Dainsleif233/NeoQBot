@@ -43,30 +43,33 @@ class Runtime:
             self._tasks.append(
                 asyncio.create_task(self._event_worker(), name=f"event-worker-{index}")
             )
-        for bot in self.settings.effective_qq_bots():
-            if not bot.enabled:
-                continue
-            message_task = bot.tasks.message_detection
+        for assignment in self.settings.qq_group_assignments():
+            message_task = assignment.tasks.message_detection
             if message_task.enabled and message_task.polling_detection:
                 self._tasks.append(
                     asyncio.create_task(
-                        self._moderation_loop(bot.id, message_task.interval_minutes),
-                        name=f"moderation-loop-{bot.id}",
+                        self._moderation_loop(
+                            assignment.bot_id,
+                            assignment.group_id,
+                            message_task.interval_minutes,
+                        ),
+                        name=f"moderation-loop-{assignment.bot_id}-{assignment.group_id}",
                     )
                 )
-            announcement_task = bot.tasks.announcement_sync
+            announcement_task = assignment.tasks.announcement_sync
             if announcement_task.enabled and (
                 announcement_task.auto_sync or announcement_task.sync_on_startup
             ):
                 self._tasks.append(
                     asyncio.create_task(
                         self._announcement_loop(
-                            bot.id,
+                            assignment.bot_id,
+                            assignment.group_id,
                             announcement_task.sync_interval_minutes,
                             announcement_task.sync_on_startup,
                             announcement_task.auto_sync,
                         ),
-                        name=f"announcement-loop-{bot.id}",
+                        name=f"announcement-loop-{assignment.bot_id}-{assignment.group_id}",
                     )
                 )
         if self.settings.retention.enabled:
@@ -105,7 +108,10 @@ class Runtime:
         end = window_end or datetime.now(UTC).replace(second=0, microsecond=0)
         result: dict[str, dict[str, str]] = {}
         for bot in self.settings.effective_qq_bots():
-            if bot.enabled and bot.tasks.message_detection.analyze:
+            if any(
+                assignment.tasks.message_detection.analyze
+                for assignment in self.settings.qq_group_assignments(bot.id)
+            ):
                 result[bot.id] = await self.run_bot_moderation(bot.id, end)
         return result
 
@@ -118,7 +124,13 @@ class Runtime:
             raise ValueError(f"Unknown QQ Bot: {bot_id}")
         end = window_end or datetime.now(UTC).replace(second=0, microsecond=0)
         result: dict[str, str] = {}
-        for group_id in bot.managed_group_ids:
+        assignments = [
+            assignment
+            for assignment in self.settings.qq_group_assignments(bot_id)
+            if assignment.tasks.message_detection.analyze
+        ]
+        for assignment in assignments:
+            group_id = assignment.group_id
             try:
                 result[group_id] = await service.run_group(group_id, end)
             except Exception as exc:
@@ -129,7 +141,10 @@ class Runtime:
     async def sync_all_announcements(self) -> dict[str, dict[str, object]]:
         result: dict[str, dict[str, object]] = {}
         for bot in self.settings.effective_qq_bots():
-            if bot.enabled and bot.tasks.announcement_sync.enabled:
+            if any(
+                assignment.tasks.announcement_sync.enabled
+                for assignment in self.settings.qq_group_assignments(bot.id)
+            ):
                 result[bot.id] = await self.sync_bot_announcements(bot.id)
         return result
 
@@ -139,7 +154,13 @@ class Runtime:
         if bot is None or service is None:
             raise ValueError(f"Unknown QQ Bot: {bot_id}")
         result: dict[str, object] = {}
-        for group_id in bot.managed_group_ids:
+        assignments = [
+            assignment
+            for assignment in self.settings.qq_group_assignments(bot_id)
+            if assignment.tasks.announcement_sync.enabled
+        ]
+        for assignment in assignments:
+            group_id = assignment.group_id
             try:
                 result[group_id] = await service.sync_group(group_id)
             except Exception as exc:
@@ -162,23 +183,39 @@ class Runtime:
         logger.info("Retention maintenance completed: %s", result)
         return result
 
-    async def _moderation_loop(self, bot_id: str, interval: int) -> None:
+    async def _moderation_loop(self, bot_id: str, group_id: str, interval: int) -> None:
         while not self._stopping.is_set():
             await asyncio.sleep(self._seconds_until_boundary(interval))
             if not self._stopping.is_set():
                 try:
-                    await self.run_bot_moderation(bot_id)
+                    service = self.moderation.get(bot_id)
+                    if service is not None:
+                        await service.run_group(group_id)
                 except Exception:
-                    logger.exception("Unexpected moderation scheduler failure for %s", bot_id)
+                    logger.exception(
+                        "Unexpected moderation scheduler failure for %s group %s",
+                        bot_id,
+                        group_id,
+                    )
 
     async def _announcement_loop(
-        self, bot_id: str, interval_minutes: int, sync_on_startup: bool, auto_sync: bool
+        self,
+        bot_id: str,
+        group_id: str,
+        interval_minutes: int,
+        sync_on_startup: bool,
+        auto_sync: bool,
     ) -> None:
+        service = self.announcements.get(bot_id)
+        if service is None:
+            return
         if sync_on_startup:
             try:
-                await self.sync_bot_announcements(bot_id)
+                await service.sync_group(group_id)
             except Exception:
-                logger.exception("Initial announcement sync failed for %s", bot_id)
+                logger.exception(
+                    "Initial announcement sync failed for %s group %s", bot_id, group_id
+                )
         if not auto_sync:
             return
         interval_seconds = max(1, interval_minutes) * 60
@@ -186,9 +223,13 @@ class Runtime:
             await asyncio.sleep(interval_seconds)
             if not self._stopping.is_set():
                 try:
-                    await self.sync_bot_announcements(bot_id)
+                    await service.sync_group(group_id)
                 except Exception:
-                    logger.exception("Unexpected announcement scheduler failure for %s", bot_id)
+                    logger.exception(
+                        "Unexpected announcement scheduler failure for %s group %s",
+                        bot_id,
+                        group_id,
+                    )
 
     async def _maintenance_loop(self) -> None:
         try:

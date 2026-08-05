@@ -494,6 +494,17 @@ input, textarea, select { border-radius: 6px; padding: 9px 10px; background: var
 .connection-list span { overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .connection-list select { padding: 5px 6px; font-size: 9px; }
 .connection-list button { width: 24px; height: 24px; padding: 0; border: 1px solid var(--line); border-radius: 5px; color: var(--muted); background: var(--surface-2); }
+.assignment-task-editor { overflow: hidden; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-2); }
+.assignment-task-editor > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 10px; border-bottom: 1px solid var(--line); }
+.assignment-task-editor > header strong, .assignment-task-editor > header small { display: block; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.assignment-task-editor > header strong { font-size: 10px; }
+.assignment-task-editor > header small { margin-top: 3px; color: var(--subtle); font: 8px ui-monospace, Consolas, monospace; }
+.assignment-task-editor .workflow-list { padding: 0 10px; }
+.assignment-task-editor .task-master { padding: 12px 0; }
+.assignment-task-editor .task-master strong { font-size: 11px; }
+.assignment-task-editor .task-master small { font-size: 9px; }
+.assignment-task-editor .task-detail { grid-template-columns: 1fr; gap: 8px; padding-bottom: 12px; }
+.assignment-task-editor .switch-field { min-height: 34px; padding: 7px; }
 #inspector-content > .button.danger { width: calc(100% - 28px); margin: 14px; }
 .orchestration-statusbar { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 0 10px; border-top: 1px solid var(--line); color: var(--subtle); background: var(--surface); font: 8px ui-monospace, Consolas, monospace; }
 .context-menu { position: fixed; z-index: 120; width: 238px; padding: 5px; border: 1px solid var(--line-strong); border-radius: 8px; background: color-mix(in srgb, var(--surface) 97%, transparent); box-shadow: var(--shadow); backdrop-filter: blur(24px); }
