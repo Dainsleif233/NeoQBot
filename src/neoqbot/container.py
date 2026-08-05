@@ -46,7 +46,8 @@ def build_container(settings: Settings) -> Container:
     database.initialize()
     message_recorder = LocalMessageRecorder(settings.app.message_archive_path)
     auth = GuiAuth(database, settings.gui)
-    auth.ensure_bootstrap_admin()
+    if settings.gui.enabled:
+        auth.ensure_bootstrap_admin()
     qq_bots = settings.effective_qq_bots()
     qq_clients = {bot.id: OneBotClient(bot, dry_run=settings.app.dry_run) for bot in qq_bots}
     napcat_clients = {bot.id: NapCatWebUiClient(bot) for bot in qq_bots}

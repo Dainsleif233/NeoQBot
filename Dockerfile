@@ -23,7 +23,7 @@ COPY pyproject.toml README.md LICENSE ./
 COPY src ./src
 RUN pip install . && useradd --create-home --uid 10001 neoqbot && mkdir -p /app/data && chown -R neoqbot:neoqbot /app
 
-USER neoqbot
+USER 10001:10001
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \

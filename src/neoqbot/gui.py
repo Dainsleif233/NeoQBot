@@ -18,8 +18,9 @@ from pydantic import BaseModel, Field
 
 from . import __version__
 from .auth import GuiSession
-from .config import Settings
+from .config import FeishuBotConfig, QQBotConfig, Settings
 from .container import Container
+from .security import FailureLimiter
 
 
 class LoginPayload(BaseModel):
@@ -29,29 +30,12 @@ class LoginPayload(BaseModel):
 
 class PasswordPayload(BaseModel):
     current_password: str = Field(min_length=1, max_length=512)
-    new_password: str = Field(min_length=10, max_length=512)
+    new_password: str = Field(min_length=14, max_length=512)
 
 
 class SettingsPayload(BaseModel):
     config: dict[str, Any]
     revision: str = Field(default="", max_length=64)
-
-
-class LoginThrottle:
-    def __init__(self) -> None:
-        self._failures: dict[str, list[float]] = {}
-
-    def allowed(self, address: str) -> bool:
-        now = time.monotonic()
-        recent = [stamp for stamp in self._failures.get(address, []) if now - stamp < 300]
-        self._failures[address] = recent
-        return len(recent) < 8
-
-    def fail(self, address: str) -> None:
-        self._failures.setdefault(address, []).append(time.monotonic())
-
-    def clear(self, address: str) -> None:
-        self._failures.pop(address, None)
 
 
 def _settings_revision(settings: Settings) -> str:
@@ -67,9 +51,6 @@ def _settings_revision(settings: Settings) -> str:
 def _preserve_masked_secrets(candidate: dict[str, Any], current: Settings) -> dict[str, Any]:
     secret_values = {
         ("app", "admin_api_token"): current.app.admin_api_token,
-        ("qq", "access_token"): current.qq.access_token,
-        ("qq", "webui_token"): current.qq.webui_token,
-        ("qq", "webhook_secret"): current.qq.webhook_secret,
         ("llm", "api_key"): current.llm.api_key,
         ("gui", "bootstrap_password"): current.gui.bootstrap_password,
     }
@@ -79,46 +60,94 @@ def _preserve_masked_secrets(candidate: dict[str, Any], current: Settings) -> di
             continue
         if section_value.get(key) in (None, "", "***"):
             section_value[key] = original
+
+    sensitive_edits = current.gui.allow_sensitive_settings_edits
+    if not sensitive_edits:
+        incoming_app = candidate.get("app")
+        requested_dry_run = (
+            incoming_app.get("dry_run", current.app.dry_run)
+            if isinstance(incoming_app, dict)
+            else current.app.dry_run
+        )
+        if not isinstance(requested_dry_run, bool):
+            raise ValueError("app.dry_run 必须是布尔值")
+        candidate["app"] = current.app.model_dump(mode="json")
+        candidate["app"]["dry_run"] = requested_dry_run
+        candidate["gui"] = current.gui.model_dump(mode="json")
+        llm = candidate.setdefault("llm", {})
+        if not isinstance(llm, dict):
+            raise ValueError("llm 配置必须是对象")
+        llm["base_url"] = current.llm.base_url
+        llm["api_key"] = current.llm.api_key
+
     qq_section = candidate.setdefault("qq", {})
     if isinstance(qq_section, dict) and isinstance(qq_section.get("bots"), list):
         current_bots = {bot.id: bot for bot in current.effective_qq_bots()}
+        safe_defaults = QQBotConfig(id="new-bot", enabled=False).model_dump(mode="json")
+        locked_keys = {
+            "onebot_base_url",
+            "access_token",
+            "access_token_file",
+            "webhook_secret",
+            "request_timeout_seconds",
+            "webui_base_url",
+            "webui_token",
+            "webui_token_file",
+            "webui_public_url",
+            "webui_public_port",
+            "qrcode_path",
+            "announcement_actions",
+        }
         for incoming in qq_section["bots"]:
             if not isinstance(incoming, dict):
                 continue
             existing = current_bots.get(str(incoming.get("id", "")))
             if existing is None:
+                if not sensitive_edits:
+                    incoming["enabled"] = False
+                    for key in locked_keys:
+                        incoming[key] = safe_defaults[key]
                 continue
             for key in ("access_token", "webui_token", "webhook_secret"):
                 if incoming.get(key) in (None, "", "***"):
                     incoming[key] = getattr(existing, key)
+            if not sensitive_edits:
+                existing_data = existing.model_dump(mode="json")
+                for key in locked_keys:
+                    incoming[key] = existing_data[key]
+
     feishu = candidate.setdefault("feishu", {})
-    if isinstance(feishu, dict):
-        incoming_environment = feishu.get("extra_environment")
-        if incoming_environment in (None, "***"):
-            feishu["extra_environment"] = current.feishu.extra_environment
-        elif isinstance(incoming_environment, dict):
-            for key, value in list(incoming_environment.items()):
-                if value in (None, "", "***") and key in current.feishu.extra_environment:
-                    incoming_environment[key] = current.feishu.extra_environment[key]
-        if isinstance(feishu.get("bots"), list):
-            current_bots = {bot.id: bot for bot in current.effective_feishu_bots()}
-            for incoming in feishu["bots"]:
-                if not isinstance(incoming, dict):
-                    continue
-                existing = current_bots.get(str(incoming.get("id", "")))
-                if existing is None:
-                    continue
-                environment = incoming.get("extra_environment")
-                if environment in (None, "***"):
-                    incoming["extra_environment"] = existing.extra_environment
-                elif isinstance(environment, dict):
-                    for key, value in list(environment.items()):
-                        if value in (None, "", "***") and key in existing.extra_environment:
-                            environment[key] = existing.extra_environment[key]
-    app_section = candidate.setdefault("app", {})
-    if not isinstance(app_section, dict):
-        raise ValueError("app 配置必须是对象")
-    app_section["database_path"] = current.app.database_path
+    if isinstance(feishu, dict) and isinstance(feishu.get("bots"), list):
+        current_bots = {bot.id: bot for bot in current.effective_feishu_bots()}
+        safe_defaults = FeishuBotConfig(id="new-bot", enabled=False).model_dump(mode="json")
+        locked_keys = {
+            "driver",
+            "executable",
+            "command_templates",
+            "archive_payload_stdin",
+            "extra_environment",
+        }
+        for incoming in feishu["bots"]:
+            if not isinstance(incoming, dict):
+                continue
+            existing = current_bots.get(str(incoming.get("id", "")))
+            if existing is None:
+                if not sensitive_edits:
+                    incoming["enabled"] = False
+                    for key in locked_keys:
+                        incoming[key] = safe_defaults[key]
+                continue
+            environment = incoming.get("extra_environment")
+            if environment in (None, "***"):
+                incoming["extra_environment"] = existing.extra_environment
+            elif isinstance(environment, dict):
+                for key, value in list(environment.items()):
+                    if value in (None, "", "***") and key in existing.extra_environment:
+                        environment[key] = existing.extra_environment[key]
+            if not sensitive_edits:
+                existing_data = existing.model_dump(mode="json")
+                for key in locked_keys:
+                    incoming[key] = existing_data[key]
     return candidate
 
 
@@ -130,7 +159,7 @@ def register_gui(
 ) -> None:
     web_root = Path(__file__).with_name("web")
     app.mount("/gui/assets", StaticFiles(directory=web_root), name="gui-assets")
-    throttle = LoginThrottle()
+    login_failures = FailureLimiter()
 
     def current_session(
         neoqbot_session: str | None = Cookie(default=None, alias="neoqbot_session"),
@@ -152,14 +181,14 @@ def register_gui(
         session: GuiSession = Depends(current_session),
     ) -> GuiSession:
         if session.must_change_password:
-            raise HTTPException(status_code=403, detail="首次登录必须先修改默认密码")
+            raise HTTPException(status_code=403, detail="首次登录必须先修改随机初始密码")
         return session
 
     def ready_admin_csrf(
         session: GuiSession = Depends(csrf_session),
     ) -> GuiSession:
         if session.must_change_password:
-            raise HTTPException(status_code=403, detail="首次登录必须先修改默认密码")
+            raise HTTPException(status_code=403, detail="首次登录必须先修改随机初始密码")
         return session
 
     @app.get("/", include_in_schema=False)
@@ -179,19 +208,25 @@ def register_gui(
         payload: LoginPayload, request: Request, response: Response
     ) -> dict[str, Any]:
         address = request.client.host if request.client else "unknown"
-        if not throttle.allowed(address):
-            raise HTTPException(status_code=429, detail="登录失败次数过多，请五分钟后再试")
+        address_key = f"login-ip:{address}"
+        window_seconds = 300
+        if login_failures.blocked(address_key, 8, window_seconds):
+            raise HTTPException(
+                status_code=429,
+                detail="登录失败次数过多，请五分钟后再试",
+                headers={"Retry-After": str(window_seconds)},
+            )
         result = await asyncio.to_thread(
             get_container().auth.login, payload.username, payload.password
         )
         if result is None:
-            throttle.fail(address)
+            login_failures.hit(address_key, window_seconds)
             get_container().database.audit(
                 "gui_login", "failed", "admin_user", payload.username, {"address": address}
             )
-            await asyncio.sleep(0.25)
+            await asyncio.sleep(0.3 + secrets.randbelow(151) / 1000)
             raise HTTPException(status_code=401, detail="用户名或密码错误")
-        throttle.clear(address)
+        login_failures.clear(address_key)
         token, session = result
         settings = get_settings()
         response.set_cookie(
@@ -229,7 +264,14 @@ def register_gui(
         neoqbot_session: str | None = Cookie(default=None, alias="neoqbot_session"),
     ) -> dict[str, bool]:
         get_container().auth.logout(neoqbot_session)
-        response.delete_cookie("neoqbot_session", path="/")
+        settings = get_settings()
+        response.delete_cookie(
+            "neoqbot_session",
+            path="/",
+            secure=settings.gui.secure_cookie,
+            httponly=True,
+            samesite="strict",
+        )
         return {"ok": True}
 
     @app.post("/api/gui/auth/password")

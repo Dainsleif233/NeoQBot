@@ -14,7 +14,7 @@ from .app import create_app
 from .config import Settings
 from .container import build_container
 from .database import Database
-from .napcat import initialize_napcat
+from .napcat import initialize_napcat, initialize_secrets
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -32,6 +32,13 @@ def _parser() -> argparse.ArgumentParser:
     subparsers.add_parser("sync-announcements", help="Run one announcement sync immediately")
     subparsers.add_parser("prune", help="Apply configured data-retention policy immediately")
     subparsers.add_parser("show-config", help="Print effective redacted configuration")
+    secrets_parser = subparsers.add_parser(
+        "init-secrets", help="Generate local admin, OneBot, and NapCat secret files"
+    )
+    secrets_parser.add_argument(
+        "--secret-dir",
+        default=os.getenv("NEOQBOT_SECRET_DIR", "data/secrets"),
+    )
     napcat = subparsers.add_parser(
         "init-napcat", help="Initialize NapCat WebUI and OneBot configuration"
     )
@@ -98,6 +105,10 @@ async def _run_once(settings: Settings, command: str) -> dict[str, Any]:
 
 def main() -> None:
     args = _parser().parse_args()
+    if args.command == "init-secrets":
+        result = initialize_secrets(Path(args.secret_dir))
+        print(json.dumps({"ok": True, **result}, ensure_ascii=False))
+        return
     if args.command == "init-napcat":
         result = initialize_napcat(
             Path(args.napcat_config_dir), Path(args.secret_dir), webhook_url=args.webhook_url
@@ -115,6 +126,10 @@ def main() -> None:
             host=settings.app.host,
             port=settings.app.port,
             log_level=settings.app.log_level.lower(),
+            proxy_headers=True,
+            forwarded_allow_ips=settings.app.forwarded_allow_ips,
+            server_header=False,
+            date_header=False,
         )
         return
     if args.command == "init-db":

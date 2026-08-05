@@ -89,6 +89,7 @@ git clone https://github.com/LYOfficial/NeoQBot.git
 cd NeoQBot
 uv sync --extra dev
 cp config.example.yaml config.yaml
+uv run neoqbot init-secrets --secret-dir data/secrets
 uv run neoqbot --config config.yaml init-db
 uv run neoqbot --config config.yaml serve
 ```
@@ -97,12 +98,14 @@ Windows PowerShell：
 
 ```powershell
 Copy-Item config.example.yaml config.yaml
+uv run neoqbot init-secrets --secret-dir data/secrets
 uv run neoqbot --config config.yaml init-db
 uv run neoqbot --config config.yaml serve
 ```
 
-<http://127.0.0.1:8080/gui/> を開きます。初期アカウントは `admin`、初期パスワードは
-`neoqbotadmin` です。初回ログイン時にパスワード変更が必須です。
+<http://127.0.0.1:8080/gui/> を開きます。初期ユーザー名は `admin` です。ランダムな初期
+パスワードは `data/secrets/gui-bootstrap-password` から読み取ります。初回ログイン時に
+パスワード変更が必須です。このファイルをリポジトリへコミットしないでください。
 
 ## Docker デプロイ
 
@@ -112,11 +115,13 @@ cp config.example.yaml config.yaml
 docker compose build
 docker compose up -d
 docker compose logs -f neoqbot
+docker compose exec neoqbot sh -c 'cat /app/data/secrets/gui-bootstrap-password'
 ```
 
-既定のホスト側 URL は `http://サーバー:6688/gui/` です。Compose はデータ、NapCat 設定、
-QQ セッション、QR キャッシュ、Feishu ユーザーディレクトリを永続化します。本番環境では
-バインド先を制限し、HTTPS リバースプロキシの背後で管理画面を公開してください。
+最後のコマンドでランダムな初期パスワードを表示します。管理画面は既定でホストのループバック
+インターフェースだけにバインドされ、<http://127.0.0.1:6688/gui/> で利用できます。`6688`、
+`6099`、`6000` をインターネットへ直接公開しないでください。リモート管理には VPN、SSH
+トンネル、またはアクセス制御付き HTTPS リバースプロキシを使用してください。
 
 ```bash
 docker compose ps
@@ -150,17 +155,25 @@ neoqbot --config config.yaml show-config
 neoqbot --config config.yaml run-moderation
 neoqbot --config config.yaml sync-announcements
 neoqbot --config config.yaml prune
+neoqbot init-secrets
 neoqbot init-napcat
 ```
 
 ## セキュリティ境界
 
 - 初期接続確認では `app.dry_run: true` を維持してください。
-- 管理 API、OneBot、NapCat WebUI には別々のランダム Token を設定してください。
-- 本番環境では HTTPS と secure Cookie を有効にしてください。
+- 管理 API、OneBot、NapCat WebUI、GUI 初期ログインには別々のランダム Secret を使用し、
+  漏えい時は影響する Secret を直ちにローテーションしてください。
+- 既定のループバックバインドを維持し、`6688`、`6099`、`6000` を直接公開しないでください。
+- 信頼できる HTTPS プロキシの背後では `app.require_https: true`、`gui.secure_cookie: true` を設定し、
+  `app.allowed_hosts`、`app.forwarded_allow_ips`、`app.management_allowed_networks` を正確に指定します。
+- `app.forwarded_allow_ips` に `*` を指定しないでください。偽装されたプロキシヘッダーにより、
+  接続元アドレス制御が回避される可能性があります。
+- OpenAPI は既定で無効であり、高リスクな接続・Secret 設定は GUI から変更できません。
 - NeoQBot は QQ パスワードを保存しません。QR コードは関連する NapCat が生成します。
 - 自動承認、拒否、通知、アカウント操作は最小権限・少数グループから段階的に導入してください。
 - SQLite、メッセージアーカイブ、Feishu と NapCat のセッションを保護・バックアップしてください。
+- 詳細な強化チェックリスト、プロキシ要件、漏えい時の対応は [SECURITY.md](SECURITY.md) を参照してください。
 
 ## リポジトリ構成
 
@@ -198,6 +211,7 @@ node --check src/neoqbot/web/app.js
 - [リソース編成](docs/ORCHESTRATION.md)
 - [Feishu CLI 連携](docs/FEISHU_CLI.md)
 - [ブランド素材](assets/branding/README.md)
+- [セキュリティポリシーとデプロイチェックリスト](SECURITY.md)
 - [简体中文 README](README.md)
 - [English README](README.en.md)
 

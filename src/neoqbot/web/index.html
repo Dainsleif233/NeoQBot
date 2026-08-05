@@ -24,7 +24,7 @@
         <img class="brand-logo card-logo" src="/gui/assets/img/neoqbot-logo.png" alt="NeoQBot">
         <div><p class="eyebrow">NeoQBot Console</p><h2>管理员登录</h2></div>
       </div>
-      <p class="muted">首次部署使用 admin / neoqbotadmin，登录后必须修改密码。</p>
+      <p class="muted">首次部署使用 admin 和自动生成的随机密码，登录后必须立即修改。</p>
       <form id="login-form" class="stack-lg">
         <label>用户名<input id="login-username" autocomplete="username" value="admin" required></label>
         <label>密码<input id="login-password" type="password" autocomplete="current-password" required></label>
@@ -38,7 +38,7 @@
     <section class="auth-brand">
       <img class="brand-logo hero-logo" src="/gui/assets/img/neoqbot-logo.png" alt="NeoQBot">
       <p class="eyebrow">Security checkpoint</p>
-      <h1>先换掉默认密码。</h1>
+      <h1>先更换随机初始密码。</h1>
       <p class="lead">这是保护 QQ 登录态、飞书文档与群聊审计数据的第一道边界。</p>
     </section>
     <section class="auth-card">
@@ -46,7 +46,7 @@
         <img class="brand-logo card-logo" src="/gui/assets/img/neoqbot-logo.png" alt="NeoQBot">
         <div><p class="eyebrow">首次登录</p><h2>设置新密码</h2></div>
       </div>
-      <p class="muted">至少 10 个字符，不能继续使用默认密码。</p>
+      <p class="muted">至少 14 个字符，建议使用密码管理器生成并保存。</p>
       <form id="password-form" class="stack-lg">
         <label>当前密码<input id="current-password" type="password" autocomplete="current-password" required></label>
         <label>新密码<input id="new-password" type="password" autocomplete="new-password" minlength="10" required></label>

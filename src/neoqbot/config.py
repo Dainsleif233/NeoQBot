@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from ipaddress import ip_network
 from pathlib import Path
 from typing import Literal
 
@@ -25,29 +26,64 @@ def resolve_secret(value: str, file_path: str = "") -> str:
 
 class AppConfig(BaseModel):
     environment: str = "development"
-    host: str = "0.0.0.0"
+    host: str = "127.0.0.1"
     port: int = Field(default=8080, ge=1, le=65535)
     timezone: str = "Asia/Shanghai"
     log_level: str = "INFO"
     database_path: str = "data/neoqbot.db"
     message_archive_path: str = "data/group-message-records"
     admin_api_token: str = ""
+    admin_api_token_file: str = "data/secrets/admin-api.token"
     dry_run: bool = True
+    allowed_hosts: list[str] = Field(
+        default_factory=lambda: ["localhost", "127.0.0.1", "neoqbot", "testserver"]
+    )
+    management_allowed_networks: list[str] = Field(default_factory=list)
+    require_https: bool = False
+    forwarded_allow_ips: str = "127.0.0.1"
+    max_request_body_bytes: int = Field(default=2 * 1024 * 1024, ge=16 * 1024, le=16 * 1024 * 1024)
+    expose_api_docs: bool = False
+
+    @field_validator("admin_api_token")
+    @classmethod
+    def strong_admin_token(cls, value: str) -> str:
+        value = value.strip()
+        if value and len(value) < 32:
+            raise ValueError("app.admin_api_token 至少需要 32 个字符")
+        return value
+
+    @field_validator("allowed_hosts")
+    @classmethod
+    def valid_allowed_hosts(cls, value: list[str]) -> list[str]:
+        hosts = [host.strip() for host in value if host.strip()]
+        if not hosts:
+            raise ValueError("app.allowed_hosts 不能为空")
+        if any("/" in host or "://" in host for host in hosts):
+            raise ValueError("app.allowed_hosts 只填写主机名或 IP，不要填写 URL/路径")
+        return list(dict.fromkeys(hosts))
+
+    @field_validator("management_allowed_networks")
+    @classmethod
+    def valid_management_networks(cls, value: list[str]) -> list[str]:
+        networks = [network.strip() for network in value if network.strip()]
+        for network in networks:
+            ip_network(network, strict=False)
+        return list(dict.fromkeys(networks))
 
 
 class QQConnectionConfig(BaseModel):
-    enabled: bool = True
-    onebot_base_url: str = "http://qq-bridge:3000"
+    enabled: bool = False
+    onebot_base_url: str = "http://127.0.0.1:3000"
     access_token: str = ""
-    access_token_file: str = "/app/data/secrets/napcat-onebot.token"
+    access_token_file: str = "data/secrets/napcat-onebot.token"
     webhook_secret: str = ""
     request_timeout_seconds: float = 15.0
-    webui_base_url: str = "http://qq-bridge:6099"
+    webui_base_url: str = "http://127.0.0.1:6099"
     webui_token: str = ""
-    webui_token_file: str = "/app/data/secrets/napcat-webui.token"
+    webui_token_file: str = "data/secrets/napcat-webui.token"
     webui_public_url: str = ""
     webui_public_port: int = Field(default=6099, ge=1, le=65535)
-    qrcode_path: str = "/app/napcat-cache/qrcode.png"
+    qrcode_path: str = "data/napcat-cache/qrcode.png"
     managed_group_ids: list[str] = Field(default_factory=list)
     administrator_qq_ids: list[str] = Field(default_factory=list)
     announcement_actions: list[str] = Field(
@@ -159,7 +195,7 @@ class LLMConfig(BaseModel):
 
 
 class JoinApprovalConfig(BaseModel):
-    enabled: bool = True
+    enabled: bool = False
     auto_approve: bool = False
     auto_reject: bool = False
     minimum_confidence: float = Field(default=0.88, ge=0, le=1)
@@ -169,7 +205,7 @@ class JoinApprovalConfig(BaseModel):
 
 
 class ModerationConfig(BaseModel):
-    enabled: bool = True
+    enabled: bool = False
     interval_minutes: int = Field(default=30, ge=1, le=1440)
     window_minutes: int = Field(default=5, ge=1, le=1440)
     risk_threshold: float = Field(default=0.7, ge=0, le=1)
@@ -182,9 +218,9 @@ class ModerationConfig(BaseModel):
 
 
 class AnnouncementConfig(BaseModel):
-    enabled: bool = True
+    enabled: bool = False
     sync_interval_minutes: int = Field(default=30, ge=1, le=10080)
-    sync_on_startup: bool = True
+    sync_on_startup: bool = False
 
 
 class FeishuConnectionConfig(BaseModel):
@@ -292,9 +328,12 @@ class RetentionConfig(BaseModel):
 class GuiConfig(BaseModel):
     enabled: bool = True
     bootstrap_username: str = Field(default="admin", min_length=1, max_length=64)
-    bootstrap_password: str = Field(default="neoqbotadmin", min_length=8, max_length=512)
-    session_hours: int = Field(default=12, ge=1, le=720)
+    bootstrap_password: str = Field(default="", max_length=512)
+    bootstrap_password_file: str = "data/secrets/gui-bootstrap-password"
+    session_hours: int = Field(default=8, ge=1, le=168)
+    max_sessions_per_user: int = Field(default=5, ge=1, le=20)
     secure_cookie: bool = False
+    allow_sensitive_settings_edits: bool = False
 
 
 class Settings(BaseSettings):
@@ -425,8 +464,24 @@ class Settings(BaseSettings):
         data["gui"]["bootstrap_password"] = "***"
         return json.loads(json.dumps(data, ensure_ascii=False, default=str))
 
-    def diagnostics(self) -> dict[str, list[str]]:
+    def deployment_security_errors(self) -> list[str]:
+        """Return configuration errors that make serving the control plane unsafe."""
         errors: list[str] = []
+        production = self.app.environment.lower() == "production"
+        if production and not self.app.require_https:
+            errors.append("生产环境必须设置 app.require_https=true 并使用可信 HTTPS 反向代理")
+        if self.gui.enabled and self.app.require_https and not self.gui.secure_cookie:
+            errors.append("app.require_https=true 时必须同时启用 gui.secure_cookie")
+        if production and "*" in self.app.allowed_hosts:
+            errors.append("生产环境禁止在 app.allowed_hosts 中使用通配符")
+        if production and self.app.forwarded_allow_ips.strip() == "*":
+            errors.append("生产环境禁止设置 app.forwarded_allow_ips='*'")
+        if production and self.app.expose_api_docs:
+            errors.append("生产环境禁止公开 OpenAPI/Swagger 文档")
+        return errors
+
+    def diagnostics(self) -> dict[str, list[str]]:
+        errors = self.deployment_security_errors()
         warnings: list[str] = []
         qq_bots = [bot for bot in self.effective_qq_bots() if bot.enabled]
         if not qq_bots:
@@ -439,9 +494,9 @@ class Settings(BaseSettings):
                 errors.append(f"{prefix}.administrator_qq_ids 不能为空")
             onebot_token = resolve_secret(bot.access_token, bot.access_token_file)
             if not onebot_token:
-                warnings.append(f"{prefix}.access_token 未设置")
+                errors.append(f"{prefix}.access_token 未设置，Webhook 与 OneBot API 将拒绝连接")
             if not bot.webhook_secret and not onebot_token:
-                warnings.append(f"{prefix} 未设置 Webhook HMAC 或 Bearer Token，事件入口未鉴权")
+                errors.append(f"{prefix} 未设置 Webhook HMAC 或 Bearer Token，事件入口已安全禁用")
         if self.llm.driver == "openai_compatible":
             if not self.llm.api_key:
                 errors.append("llm.api_key 未设置")
@@ -477,18 +532,32 @@ class Settings(BaseSettings):
                 )
             if bot.search_feishu_bot_id and bot.search_feishu_bot_id not in feishu_ids:
                 errors.append(f"qq.bots.{bot.id}.search_feishu_bot_id 指向未知飞书 Bot")
-        if not self.app.admin_api_token:
+        admin_api_token = resolve_secret(self.app.admin_api_token, self.app.admin_api_token_file)
+        if not admin_api_token:
             warnings.append("app.admin_api_token 未设置，管理 API 将禁用")
+        elif len(admin_api_token) < 32:
+            errors.append("管理 API Token 至少需要 32 个字符")
         if self.app.dry_run:
             warnings.append("app.dry_run=true，所有 QQ 出站动作均被抑制")
         if self.join_approval.auto_reject or any(
             bot.tasks.join_management.auto_reject for bot in qq_bots
         ):
             warnings.append("join_approval.auto_reject=true，建议保持人工拒绝")
-        if self.gui.bootstrap_username == "admin" and self.gui.bootstrap_password == "neoqbotadmin":
-            warnings.append("GUI 仍配置默认初始凭据，首次登录后必须修改密码")
+        bootstrap_password = resolve_secret(
+            self.gui.bootstrap_password, self.gui.bootstrap_password_file
+        )
+        if self.gui.enabled and len(bootstrap_password) < 16:
+            errors.append("GUI 初始密码缺失或少于 16 个字符，服务将拒绝创建管理员")
         if not self.gui.secure_cookie:
             warnings.append("gui.secure_cookie=false，仅适合 HTTP 联调或由可信反向代理提供 HTTPS")
+        if "*" in self.app.allowed_hosts:
+            warnings.append("app.allowed_hosts 包含通配符，Host Header 防护已弱化")
+        if self.app.forwarded_allow_ips.strip() == "*":
+            warnings.append("app.forwarded_allow_ips='*' 会信任任意代理头，不建议使用")
+        if self.app.expose_api_docs:
+            warnings.append("OpenAPI 文档已公开，仅应在受限开发环境使用")
+        if not self.app.management_allowed_networks:
+            warnings.append("管理端未配置 IP/CIDR 白名单，请依赖本机绑定、VPN 或反向代理访问控制")
         connected_resources = {
             endpoint
             for edge in self.orchestration.edges

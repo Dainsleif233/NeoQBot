@@ -478,8 +478,40 @@ class Database:
             )
             return cursor.rowcount == 1
 
+    def reset_bootstrap_admin_password(
+        self,
+        username: str,
+        password_hash: str,
+        password_salt: str,
+        password_iterations: int,
+    ) -> bool:
+        """Replace an unchanged bootstrap credential and invalidate its sessions."""
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE admin_users
+                SET password_hash = ?, password_salt = ?, password_iterations = ?, updated_at = ?
+                WHERE username = ? AND must_change_password = 1
+                """,
+                (
+                    password_hash,
+                    password_salt,
+                    password_iterations,
+                    utc_now().isoformat(),
+                    username,
+                ),
+            )
+            if cursor.rowcount:
+                connection.execute("DELETE FROM gui_sessions WHERE username = ?", (username,))
+            return cursor.rowcount == 1
+
     def create_gui_session(
-        self, token_hash: str, username: str, csrf_token: str, expires_at: datetime
+        self,
+        token_hash: str,
+        username: str,
+        csrf_token: str,
+        expires_at: datetime,
+        max_sessions: int = 5,
     ) -> None:
         with self._lock, self._connect() as connection:
             connection.execute(
@@ -495,6 +527,18 @@ class Database:
                     expires_at.isoformat(),
                     utc_now().isoformat(),
                 ),
+            )
+            connection.execute(
+                """
+                DELETE FROM gui_sessions
+                WHERE username = ? AND token_hash NOT IN (
+                    SELECT token_hash FROM gui_sessions
+                    WHERE username = ?
+                    ORDER BY created_at DESC
+                    LIMIT ?
+                )
+                """,
+                (username, username, max_sessions),
             )
 
     def get_gui_session(self, token_hash: str) -> dict[str, Any] | None:

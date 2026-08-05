@@ -1,6 +1,6 @@
 app:
   environment: development
-  host: 0.0.0.0
+  host: 127.0.0.1
   port: 8080
   timezone: Asia/Shanghai
   log_level: INFO
@@ -9,25 +9,38 @@ app:
   message_archive_path: data/group-message-records
   # 生产环境请通过 NEOQBOT_APP__ADMIN_API_TOKEN 注入随机长令牌。
   admin_api_token: ""
+  # Docker 初始化服务会自动生成；文件内容优先于上面的明文值。
+  admin_api_token_file: data/secrets/admin-api.token
   # 首次联调务必保持 true；确认收发链路后再关闭。
   dry_run: true
+  # 只允许这些 Host Header。通过域名访问时必须加入实际域名。
+  allowed_hosts: [localhost, 127.0.0.1, neoqbot]
+  # 可选管理端 IP/CIDR 白名单；留空时依赖本机端口绑定、VPN 或反向代理访问控制。
+  management_allowed_networks: []
+  # 通过可信 HTTPS 反向代理公开管理端时改为 true。
+  require_https: false
+  # 仅信任这些地址发送的 X-Forwarded-*；不要在公网环境填写 *。
+  forwarded_allow_ips: 127.0.0.1
+  max_request_body_bytes: 2097152
+  # 公网部署不要公开 OpenAPI/Swagger 文档。
+  expose_api_docs: false
 
 qq:
   # 每个账号是独立 Bot 节点；NapCat 反向 HTTP 地址为 /webhooks/onebot/<bot-id>。
   bots:
     - id: default
       name: 默认 QQ Bot
-      enabled: true
+      enabled: false
       # Compose 内使用服务名；Windows 本地直连外部 NapCat 时可改为 http://127.0.0.1:3000。
       onebot_base_url: http://qq-bridge:3000
       # Compose 自动生成随机 Token 并写入持久卷；文件存在时优先于明文值。
       access_token: ""
-      access_token_file: /app/data/secrets/napcat-onebot.token
+      access_token_file: data/secrets/napcat-onebot.token
       webhook_secret: ""
       request_timeout_seconds: 15
       webui_base_url: http://qq-bridge:6099
       webui_token: ""
-      webui_token_file: /app/data/secrets/napcat-webui.token
+      webui_token_file: data/secrets/napcat-webui.token
       webui_public_url: ""
       webui_public_port: 6099
       qrcode_path: /app/napcat-cache/qrcode.png
@@ -38,19 +51,19 @@ qq:
       search_feishu_bot_id: ""
       tasks:
         join_management:
-          enabled: true
-          detect_requests: true
-          execute_management: true
+          enabled: false
+          detect_requests: false
+          execute_management: false
           auto_approve: false
           auto_reject: false
           minimum_confidence: 0.88
         message_detection:
-          enabled: true
+          enabled: false
           record_only: false
-          realtime_detection: true
-          polling_detection: true
-          analyze: true
-          handle: true
+          realtime_detection: false
+          polling_detection: false
+          analyze: false
+          handle: false
           interval_minutes: 30
           window_minutes: 5
           risk_threshold: 0.7
@@ -75,7 +88,7 @@ llm:
   json_response_format: true
 
 join_approval:
-  enabled: true
+  enabled: false
   # 首次上线保持 false，观察审核日志后再开启。
   auto_approve: false
   auto_reject: false
@@ -90,7 +103,7 @@ join_approval:
     - 刷单
 
 moderation:
-  enabled: true
+  enabled: false
   interval_minutes: 30
   window_minutes: 5
   risk_threshold: 0.7
@@ -108,9 +121,9 @@ moderation:
       - 人肉
 
 announcements:
-  enabled: true
+  enabled: false
   sync_interval_minutes: 30
-  sync_on_startup: true
+  sync_on_startup: false
 
 feishu:
   bots:
@@ -161,7 +174,12 @@ retention:
 gui:
   enabled: true
   bootstrap_username: admin
-  bootstrap_password: neoqbotadmin
-  session_hours: 12
+  bootstrap_password: ""
+  # Docker 初始化服务生成随机初始密码；首次登录后立即修改。
+  bootstrap_password_file: data/secrets/gui-bootstrap-password
+  session_hours: 8
+  max_sessions_per_user: 5
   # 直接 HTTP 访问时保持 false；经 HTTPS 反向代理后改为 true。
   secure_cookie: false
+  # 默认禁止 GUI 修改主机、鉴权、可执行文件和连接端点等高风险部署字段。
+  allow_sensitive_settings_edits: false

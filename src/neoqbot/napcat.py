@@ -51,17 +51,51 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 
 def _ensure_secret(path: Path) -> str:
+    if path.is_symlink():
+        raise ValueError(f"Refusing to write secret through symbolic link: {path}")
     try:
         current = path.read_text(encoding="utf-8").strip()
     except OSError:
         current = ""
     if current:
+        os.chmod(path, 0o600)
         return current
     path.parent.mkdir(parents=True, exist_ok=True)
     value = secrets.token_urlsafe(32)
-    path.write_text(value + "\n", encoding="utf-8")
-    os.chmod(path, 0o600)
+    temporary_name = ""
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            temporary_name = handle.name
+            handle.write(value + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary_name, 0o600)
+        os.replace(temporary_name, path)
+    finally:
+        if temporary_name and Path(temporary_name).exists():
+            Path(temporary_name).unlink()
     return value
+
+
+def initialize_secrets(secret_dir: str | Path) -> dict[str, str]:
+    """Create the credential files required by a fresh NeoQBot deployment."""
+    secrets_path = Path(secret_dir)
+    paths = {
+        "onebot_token_file": secrets_path / "napcat-onebot.token",
+        "webui_token_file": secrets_path / "napcat-webui.token",
+        "admin_api_token_file": secrets_path / "admin-api.token",
+        "gui_bootstrap_password_file": secrets_path / "gui-bootstrap-password",
+    }
+    for path in paths.values():
+        _ensure_secret(path)
+    return {name: str(path) for name, path in paths.items()}
 
 
 def initialize_napcat(
@@ -73,11 +107,11 @@ def initialize_napcat(
 ) -> dict[str, str]:
     """Create persistent secrets and enforce the NapCat endpoints NeoQBot requires."""
     config_path = Path(config_dir)
-    secrets_path = Path(secret_dir)
-    onebot_token_path = secrets_path / "napcat-onebot.token"
-    webui_token_path = secrets_path / "napcat-webui.token"
-    onebot_token = _ensure_secret(onebot_token_path)
-    webui_token = _ensure_secret(webui_token_path)
+    secret_files = initialize_secrets(secret_dir)
+    onebot_token_path = Path(secret_files["onebot_token_file"])
+    webui_token_path = Path(secret_files["webui_token_file"])
+    onebot_token = onebot_token_path.read_text(encoding="utf-8").strip()
+    webui_token = webui_token_path.read_text(encoding="utf-8").strip()
 
     webui_config_path = config_path / "webui.json"
     webui_config = _load_json(webui_config_path)
@@ -162,6 +196,8 @@ def initialize_napcat(
         "webui_config": str(webui_config_path),
         "onebot_token_file": str(onebot_token_path),
         "webui_token_file": str(webui_token_path),
+        "admin_api_token_file": secret_files["admin_api_token_file"],
+        "gui_bootstrap_password_file": secret_files["gui_bootstrap_password_file"],
     }
 
 

@@ -94,6 +94,7 @@ git clone https://github.com/LYOfficial/NeoQBot.git
 cd NeoQBot
 uv sync --extra dev
 cp config.example.yaml config.yaml
+uv run neoqbot init-secrets --secret-dir data/secrets
 uv run neoqbot --config config.yaml init-db
 uv run neoqbot --config config.yaml serve
 ```
@@ -102,12 +103,14 @@ On Windows PowerShell:
 
 ```powershell
 Copy-Item config.example.yaml config.yaml
+uv run neoqbot init-secrets --secret-dir data/secrets
 uv run neoqbot --config config.yaml init-db
 uv run neoqbot --config config.yaml serve
 ```
 
-Open <http://127.0.0.1:8080/gui/>. The initial credentials are `admin` / `neoqbotadmin`; a password
-change is required on first login.
+Open <http://127.0.0.1:8080/gui/>. The initial username is `admin`; read the random password from
+`data/secrets/gui-bootstrap-password`. A password change is required on first login. Never commit
+this file.
 
 ## Docker deployment
 
@@ -117,11 +120,13 @@ cp config.example.yaml config.yaml
 docker compose build
 docker compose up -d
 docker compose logs -f neoqbot
+docker compose exec neoqbot sh -c 'cat /app/data/secrets/gui-bootstrap-password'
 ```
 
-The default host URL is `http://your-server:6688/gui/`. The Compose stack prepares persistent data,
-NapCat configuration, QQ session state, QR-code cache, and the Feishu user directory. Production
-deployments should restrict bind addresses and place the console behind an HTTPS reverse proxy.
+The last command prints the random bootstrap password. The console binds to the host loopback
+interface by default and is available at <http://127.0.0.1:6688/gui/>. Do not publish ports `6688`,
+`6099`, or `6000` directly to the Internet. Use a VPN, an SSH tunnel, or an access-controlled HTTPS
+reverse proxy for remote administration.
 
 Useful checks:
 
@@ -157,17 +162,26 @@ neoqbot --config config.yaml show-config
 neoqbot --config config.yaml run-moderation
 neoqbot --config config.yaml sync-announcements
 neoqbot --config config.yaml prune
+neoqbot init-secrets
 neoqbot init-napcat
 ```
 
 ## Security boundaries
 
 - Keep `app.dry_run: true` during initial integration testing.
-- Use independent random tokens for the admin API, OneBot, and the NapCat WebUI.
-- Expose the console through HTTPS and enable secure cookies in production.
+- Use independent random secrets for the admin API, OneBot, NapCat WebUI, and GUI bootstrap login;
+  rotate all affected secrets immediately after a disclosure.
+- Keep the default loopback binding. Do not expose ports `6688`, `6099`, or `6000` directly to the
+  Internet; prefer a VPN or SSH tunnel.
+- Behind a trusted HTTPS proxy, set `app.require_https: true`, `gui.secure_cookie: true`, and configure
+  `app.allowed_hosts`, `app.forwarded_allow_ips`, and `app.management_allowed_networks` precisely.
+- Never set `app.forwarded_allow_ips` to `*`; forged proxy headers can defeat source-address controls.
+- OpenAPI is disabled by default, and high-risk connection and secret settings are locked in the GUI.
 - NeoQBot never stores QQ passwords; QR codes are produced by the associated NapCat instance.
 - Roll out automatic approval, rejection, notification, and account actions to a minimal scope first.
 - Protect and back up SQLite data, message archives, Feishu sessions, and NapCat session state.
+- See [SECURITY.md](SECURITY.md) for the full hardening checklist, proxy requirements, and incident
+  response procedure.
 
 ## Repository layout
 
@@ -205,6 +219,7 @@ Actions; maintainers should run the checks above in a controlled environment bef
 - [Resource orchestration](docs/ORCHESTRATION.md)
 - [Feishu CLI integration](docs/FEISHU_CLI.md)
 - [Brand assets](assets/branding/README.md)
+- [Security policy and deployment checklist](SECURITY.md)
 - [简体中文 README](README.md)
 - [日本語 README](README.ja.md)
 

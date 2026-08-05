@@ -85,6 +85,7 @@ git clone https://github.com/LYOfficial/NeoQBot.git
 cd NeoQBot
 uv sync --extra dev
 cp config.example.yaml config.yaml
+uv run neoqbot init-secrets --secret-dir data/secrets
 uv run neoqbot --config config.yaml init-db
 uv run neoqbot --config config.yaml serve
 ```
@@ -93,12 +94,13 @@ Windows PowerShell 可使用：
 
 ```powershell
 Copy-Item config.example.yaml config.yaml
+uv run neoqbot init-secrets --secret-dir data/secrets
 uv run neoqbot --config config.yaml init-db
 uv run neoqbot --config config.yaml serve
 ```
 
-打开 <http://127.0.0.1:8080/gui/>。初始账号为 `admin`，初始密码为 `neoqbotadmin`；首次登录
-必须修改密码。
+打开 <http://127.0.0.1:8080/gui/>。初始账号为 `admin`，密码从
+`data/secrets/gui-bootstrap-password` 读取；首次登录必须修改密码。请勿把该文件提交到仓库。
 
 ## Docker 部署
 
@@ -108,11 +110,13 @@ cp config.example.yaml config.yaml
 docker compose build
 docker compose up -d
 docker compose logs -f neoqbot
+docker compose exec neoqbot sh -c 'cat /app/data/secrets/gui-bootstrap-password'
 ```
 
-默认管理端地址为 `http://服务器地址:6688/gui/`。Compose 同时准备持久化数据、NapCat 配置、
-QQ 登录态、二维码缓存和飞书用户目录。生产环境应限制管理端和 NapCat WebUI 的监听地址，并由
-HTTPS 反向代理提供访问。
+最后一条命令输出随机初始密码。默认管理端只绑定宿主机回环地址，访问地址为
+<http://127.0.0.1:6688/gui/>。Compose 同时准备持久化数据、NapCat 配置、QQ 登录态、二维码缓存和
+飞书用户目录。不要把 `6688`、`6099` 或 `6000` 直接映射到公网；远程管理优先使用 VPN、SSH
+隧道，或带访问控制的 HTTPS 反向代理。
 
 常用检查：
 
@@ -147,17 +151,24 @@ neoqbot --config config.yaml show-config
 neoqbot --config config.yaml run-moderation
 neoqbot --config config.yaml sync-announcements
 neoqbot --config config.yaml prune
+neoqbot init-secrets
 neoqbot init-napcat
 ```
 
 ## 安全边界
 
 - 首次联调保持 `app.dry_run: true`，确认连接、鉴权和审计链路后再启用写操作。
-- 为管理 API、OneBot 和 NapCat WebUI 设置独立随机 Token。
-- 管理界面应通过 HTTPS 暴露，并在生产环境启用安全 Cookie。
+- 管理 API、OneBot、NapCat WebUI 和 GUI 初始密码使用独立随机 Secret；泄露后立即全部轮换。
+- 默认仅绑定 `127.0.0.1`。不要直接公网暴露 `6688`、`6099` 或 `6000`，远程访问优先使用 VPN
+  或 SSH 隧道。
+- 生产环境必须在可信 HTTPS 反向代理后设置 `app.require_https: true`、`gui.secure_cookie: true`，
+  并准确配置 `app.allowed_hosts`、`app.forwarded_allow_ips` 和 `app.management_allowed_networks`。
+- 不要把 `app.forwarded_allow_ips` 设置为 `*`；伪造代理头可能绕过基于来源地址的访问控制。
+- OpenAPI 文档默认关闭，管理端高风险连接与 Secret 设置默认禁止通过 GUI 修改。
 - NeoQBot 不保存 QQ 密码；二维码由对应 NapCat 实例产生并通过受保护接口展示。
 - 自动审批、拒绝、通知和其他账号操作应从最小权限、少量群组开始灰度。
 - SQLite、消息归档、飞书登录态和 NapCat 登录态都应纳入加密备份与访问控制。
+- 完整的加固清单、反向代理要求和泄露处置流程见 [安全策略](SECURITY.md)。
 
 ## 项目结构
 
@@ -194,6 +205,7 @@ node --check src/neoqbot/web/app.js
 - [资源编排指南](docs/ORCHESTRATION.md)
 - [飞书 CLI 集成](docs/FEISHU_CLI.md)
 - [品牌资源](assets/branding/README.md)
+- [安全策略与部署清单](SECURITY.md)
 - [English README](README.en.md)
 - [日本語 README](README.ja.md)
 

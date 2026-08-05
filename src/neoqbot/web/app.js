@@ -242,7 +242,7 @@
     });
     var banner = $("security-banner");
     var important = (diagnostics.warnings || []).filter(function (text) {
-      return text.indexOf("默认初始凭据") >= 0 || text.indexOf("Webhook") >= 0;
+      return text.indexOf("初始密码") >= 0 || text.indexOf("Webhook") >= 0;
     });
     if (important.length) {
       banner.textContent = important.join(" · ");
@@ -1292,6 +1292,16 @@
 
   function field(card, name) { return card.querySelector('[data-field="' + name + '"]'); }
 
+  function sensitiveSettingsLocked() {
+    return !state.config || !state.config.gui || !state.config.gui.allow_sensitive_settings_edits;
+  }
+
+  function lockSensitiveControl(control) {
+    if (!control || !sensitiveSettingsLocked()) return;
+    control.disabled = true;
+    control.title = "该部署安全字段已锁定，请在服务器配置文件中修改";
+  }
+
   function bindTaskCard(taskCard) {
     var master = taskCard.querySelector('[data-role="master"]');
     function refresh() { taskCard.classList.toggle("active", master.checked); }
@@ -1345,6 +1355,10 @@
       setField(card, "qrcode_path", bot.qrcode_path || "/app/napcat-cache/qrcode.png");
       setField(card, "announcement_actions", listValue(bot.announcement_actions));
       setField(card, "search_feishu_bot_id", bot.search_feishu_bot_id || "");
+      [
+        "onebot_base_url", "access_token", "webhook_secret", "webui_public_port",
+        "webui_public_url", "qrcode_path", "announcement_actions"
+      ].forEach(function (name) { lockSensitiveControl(field(card, name)); });
       card.querySelector("[data-open-orchestration]").addEventListener("click", function () {
         switchView("integrations");
       });
@@ -1574,6 +1588,9 @@
       setField(card, "search_prefixes", listValue(bot.search_prefixes));
       setField(card, "command_templates", pretty(bot.command_templates));
       setField(card, "extra_environment", pretty(bot.extra_environment));
+      ["executable", "command_templates", "archive_payload_stdin", "extra_environment"].forEach(
+        function (name) { lockSensitiveControl(field(card, name)); }
+      );
       card.querySelector("[data-remove]").addEventListener("click", function () {
         if (state.config.feishu.bots.length <= 1) return showToast("至少保留一个飞书 Bot，可将其停用", true);
         if (!window.confirm("删除“" + bot.name + "”及其编排连接？保存设置后生效。")) return;
@@ -1666,6 +1683,10 @@
     renderQQAccountEditors();
     renderQQWorkflowEditors();
     renderFeishuEditors();
+    [
+      "cfg-environment", "cfg-log-level", "cfg-secure-cookie", "cfg-admin-token",
+      "cfg-message-archive-path", "cfg-llm-url", "cfg-llm-key"
+    ].forEach(function (id) { lockSensitiveControl($(id)); });
     activateSettingsStep(state.settingsStep || "qq");
   }
 
@@ -1702,7 +1723,9 @@
     normalizeBotConfig(state.config);
     populateSettings(state.config);
     state.settingsDirty = false;
-    $("settings-state").textContent = "配置已同步";
+    $("settings-state").textContent = sensitiveSettingsLocked()
+      ? "配置已同步；部署安全字段已锁定"
+      : "配置已同步";
   }
 
   $("settings-form").addEventListener("submit", async function (event) {
