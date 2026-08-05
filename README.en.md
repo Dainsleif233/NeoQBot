@@ -116,7 +116,6 @@ this file.
 
 ```bash
 cp .env.example .env
-cp config.example.yaml config.yaml
 docker compose build
 docker compose up -d
 docker compose logs -f neoqbot
@@ -127,6 +126,11 @@ The last command prints the random bootstrap password. The console binds to the 
 interface by default and is available at <http://127.0.0.1:6688/gui/>. Do not publish ports `6688`,
 `6099`, or `6000` directly to the Internet. Use a VPN, an SSH tunnel, or an access-controlled HTTPS
 reverse proxy for remote administration.
+
+On the first start, Compose creates the persistent configuration from the tracked
+`config.example.yaml`. To customize it before deployment, copy it to `config.yaml` and set
+`NEOQBOT_BOOTSTRAP_CONFIG_PATH=./config.yaml` in `.env`. The selected path must be a regular file.
+Git-based deployment platforms do not need an untracked `config.yaml` by default.
 
 Useful checks:
 

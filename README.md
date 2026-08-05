@@ -106,7 +106,6 @@ uv run neoqbot --config config.yaml serve
 
 ```bash
 cp .env.example .env
-cp config.example.yaml config.yaml
 docker compose build
 docker compose up -d
 docker compose logs -f neoqbot
@@ -117,6 +116,10 @@ docker compose exec neoqbot sh -c 'cat /app/data/secrets/gui-bootstrap-password'
 <http://127.0.0.1:6688/gui/>。Compose 同时准备持久化数据、NapCat 配置、QQ 登录态、二维码缓存和
 飞书用户目录。不要把 `6688`、`6099` 或 `6000` 直接映射到公网；远程管理优先使用 VPN、SSH
 隧道，或带访问控制的 HTTPS 反向代理。
+
+Compose 首次启动默认使用仓库内的 `config.example.yaml` 创建持久化配置。需要预先自定义时，复制
+为 `config.yaml`，并在 `.env` 中设置 `NEOQBOT_BOOTSTRAP_CONFIG_PATH=./config.yaml`；该路径必须
+指向真实文件，不能是目录。GitHub 拉取式部署无需创建未纳入仓库的 `config.yaml`。
 
 常用检查：
 

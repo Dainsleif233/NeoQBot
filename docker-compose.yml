@@ -1,3 +1,5 @@
+name: neoqbot
+
 services:
   init-volumes:
     image: neoqbot:local
@@ -9,7 +11,11 @@ services:
       - -ec
       - |
         umask 077
-        test -f /bootstrap/config.yaml
+        if [ ! -f /bootstrap/config.yaml ]; then
+          echo "NeoQBot bootstrap configuration is missing or is not a regular file: /bootstrap/config.yaml" >&2
+          echo "Set NEOQBOT_BOOTSTRAP_CONFIG_PATH to an existing YAML file." >&2
+          exit 66
+        fi
         if [ ! -f /mnt/neoqbot-data/config.yaml ]; then
           cp /bootstrap/config.yaml /mnt/neoqbot-data/config.yaml
         fi
@@ -22,7 +28,7 @@ services:
         chmod 700 /mnt/neoqbot-data /mnt/feishu-home /mnt/napcat-config /mnt/qq-session
         chmod 755 /mnt/napcat-cache
     volumes:
-      - ./config.yaml:/bootstrap/config.yaml:ro
+      - "${NEOQBOT_BOOTSTRAP_CONFIG_PATH:-./config.example.yaml}:/bootstrap/config.yaml:ro"
       - neoqbot-data:/mnt/neoqbot-data
       - neoqbot-feishu-home:/mnt/feishu-home
       - neoqbot-napcat-config:/mnt/napcat-config
@@ -43,6 +49,10 @@ services:
     env_file:
       - path: .env
         required: false
+    environment:
+      # 容器内部必须监听所有接口；宿主机发布仍默认限制为 127.0.0.1。
+      NEOQBOT_CONFIG: /app/data/config.yaml
+      NEOQBOT_APP__HOST: 0.0.0.0
     command:
       - sh
       - -ec
