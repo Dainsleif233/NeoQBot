@@ -15,6 +15,8 @@ app:
   dry_run: true
   # 只允许这些 Host Header。通过域名访问时必须加入实际域名。
   allowed_hosts: [localhost, 127.0.0.1, neoqbot]
+  # 允许通过服务器 IP 字面量访问；不会放行任意域名。
+  allow_ip_hosts: true
   # 可选管理端 IP/CIDR 白名单；留空时依赖本机端口绑定、VPN 或反向代理访问控制。
   management_allowed_networks: []
   # 通过可信 HTTPS 反向代理公开管理端时改为 true。

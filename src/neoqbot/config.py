@@ -38,6 +38,8 @@ class AppConfig(BaseModel):
     allowed_hosts: list[str] = Field(
         default_factory=lambda: ["localhost", "127.0.0.1", "neoqbot", "testserver"]
     )
+    # 允许通过服务器 IPv4/IPv6 字面量访问，同时继续拒绝未列入白名单的域名。
+    allow_ip_hosts: bool = True
     management_allowed_networks: list[str] = Field(default_factory=list)
     require_https: bool = False
     forwarded_allow_ips: str = "127.0.0.1"

@@ -11,13 +11,17 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from fastapi.security.utils import get_authorization_scheme_param
-from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import __version__
 from .config import Settings, resolve_secret
 from .container import Container, build_container
 from .gui import register_gui
-from .security import FailureLimiter, RequestBodyLimitMiddleware, client_ip_allowed
+from .security import (
+    FailureLimiter,
+    HostValidationMiddleware,
+    RequestBodyLimitMiddleware,
+    client_ip_allowed,
+)
 
 
 def _verify_onebot_signature(body: bytes, signature: str | None, secret: str) -> bool:
@@ -65,6 +69,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             restart_required.append("app.port")
         restart_fields = (
             "allowed_hosts",
+            "allow_ip_hosts",
             "forwarded_allow_ips",
             "max_request_body_bytes",
             "expose_api_docs",
@@ -105,8 +110,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         max_bytes=resolved_settings.app.max_request_body_bytes,
     )
     app.add_middleware(
-        TrustedHostMiddleware,
+        HostValidationMiddleware,
         allowed_hosts=resolved_settings.app.allowed_hosts,
+        allow_ip_hosts=resolved_settings.app.allow_ip_hosts,
     )
     app.state.container = container
     admin_failures = FailureLimiter()

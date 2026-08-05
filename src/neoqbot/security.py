@@ -6,6 +6,9 @@ import time
 from collections import OrderedDict, deque
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
+from urllib.parse import urlsplit
+
+from starlette.responses import PlainTextResponse
 
 
 class FailureLimiter:
@@ -56,6 +59,70 @@ def client_ip_allowed(address: str, networks: Iterable[str]) -> bool:
     except ValueError:
         return False
     return any(client in ipaddress.ip_network(network, strict=False) for network in configured)
+
+
+class HostValidationMiddleware:
+    """Allow configured hostnames and, when enabled, literal IPv4/IPv6 Host headers."""
+
+    def __init__(
+        self,
+        app: Callable[..., Awaitable[None]],
+        allowed_hosts: Iterable[str],
+        allow_ip_hosts: bool = True,
+    ) -> None:
+        self.app = app
+        self.allowed_hosts = tuple(host.lower().rstrip(".") for host in allowed_hosts)
+        self.allow_ip_hosts = allow_ip_hosts
+
+    @staticmethod
+    def _hostname(host_header: str) -> str:
+        try:
+            parsed = urlsplit(f"//{host_header}")
+        except ValueError:
+            return ""
+        if parsed.username or parsed.password or parsed.path:
+            return ""
+        return (parsed.hostname or "").lower().rstrip(".")
+
+    def _allowed(self, host: str) -> bool:
+        if not host:
+            return False
+        if "*" in self.allowed_hosts:
+            return True
+        if self.allow_ip_hosts:
+            try:
+                ipaddress.ip_address(host)
+            except ValueError:
+                pass
+            else:
+                return True
+        for pattern in self.allowed_hosts:
+            if pattern.startswith("*."):
+                if host.endswith(pattern[1:]) and host != pattern[2:]:
+                    return True
+            elif host == pattern:
+                return True
+        return False
+
+    async def __call__(
+        self,
+        scope: dict[str, Any],
+        receive: Callable[[], Awaitable[dict[str, Any]]],
+        send: Callable[[dict[str, Any]], Awaitable[None]],
+    ) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        host_headers = [
+            value.decode("latin-1")
+            for name, value in scope.get("headers", [])
+            if name.lower() == b"host"
+        ]
+        if len(host_headers) != 1 or not self._allowed(self._hostname(host_headers[0])):
+            response = PlainTextResponse("Invalid host header", status_code=400)
+            await response(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
 
 
 class _RequestBodyTooLarge(Exception):
