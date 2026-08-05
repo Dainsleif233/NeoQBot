@@ -1,405 +1,207 @@
-# MUA-Bot
+<div align="center">
 
-MUA-Bot 是一个面向 Ubuntu/Debian 部署的跨平台群治理 Agent。它通过 OneBot 11 接入真人
-QQ 客户端，通过可配置的飞书 CLI 接口归档和检索云文档，并使用 Agnes AI 或任意
-OpenAI-compatible 模型进行结构化审核。
+<img src="src/neoqbot/web/img/neoqbot-logo.svg" alt="NeoQBot logo" width="112">
 
-当前仓库已经包含可运行的首版核心，而不是只有设计稿：
+# NeoQBot
 
-- QQ 入群申请接收、幂等落库、模型审核、可控自动同意和人工复核通知；
-- QQ 群消息可选择纯记录或持续分析；纯记录不调用模型，并按日写入本地 JSONL 挂载卷；
-- 分析模式默认每 30 分钟处理此前 5 分钟窗口，命中风险时私聊管理员；
-- QQ 群公告全量获取、本地版本化归档、失败重试和飞书同步；
-- 管理员 QQ 私聊 `搜索 关键词`，调用飞书 CLI 检索并将结果回复 QQ；
-- SQLite 审计记录、健康检查、管理 API、CLI、AstrBot 控制插件；
-- 默认 30 天消息保留策略与每日自动清理（公告版本不自动删除）；
-- 内置中文管理 GUI：QQ 二维码扫码登录、分步设置向导、配置热加载、任务执行与审计浏览；
-- GUI 采用 Win11 / Codex / VS Code 风格的中性黑白工作台，可切换深浅主题；
-- 多 Bot 编排：可同时配置多个 QQ / 飞书账号，并让不同 QQ Bot 独立承担入群管理、
-  消息检测和公告同步事务；
-- 资源编排画布：右键创建 QQ / 飞书 Bot、QQ群、飞书群和知识库，拖动节点并从端口拖线，
-  支持一个 Bot 管理多个群、多个 Bot 协作管理同一群，以及群/机器人与知识库之间的归档、
-  检索和同步关系；
-- 节点详情检查器：点击账号可查看连接状态、扫码登录或进入完整设置；点击群可直接浏览
-  已采集的聊天、公告、风控分析、入群申请与负责 Bot；
-- 可检索审计浏览器：按记录类型、Bot、群号和关键词组合筛选，支持服务端分页与折叠查看
-  原始结构化记录；
-- `Ctrl+K` 命令面板：快速跳转页面、新建编排资源、执行分析/公告/维护任务和切换主题；
-- 入群事务支持“只检测登记”与“执行管理”分离；消息事务支持纯记录、长期检测、轮询检测、
-  分析报告和管理员通知分离；公告事务支持一键全量同步与自动同步；
-- Windows 开发支持、Linux Dockerfile 和 docker-compose。
+**面向多机器人、多群组与知识资源的可审计编排控制面**
 
-首次启动默认 `dry_run: true`、`auto_approve: false`、`auto_reject: false`。在真实群验证前，
-MUA-Bot 不会批准/拒绝申请，也不会真正向 QQ 发送消息。
+[![Python](https://img.shields.io/badge/Python-3.11%2B-111111?logo=python&logoColor=white)](https://www.python.org/)
+[![License](https://img.shields.io/github/license/LYOfficial/NeoQBot?color=111111)](LICENSE)
+[![Version](https://img.shields.io/badge/version-0.4.0-111111)](https://github.com/LYOfficial/NeoQBot)
 
-## 架构
+简体中文 · [English](README.en.md) · [日本語](README.ja.md)
+
+[快速开始](#快速开始) · [资源编排](#资源编排) · [部署](#docker-部署) · [安全](#安全边界) · [文档](#文档)
+
+</div>
+
+NeoQBot 是一个自托管的机器人与群组运营平台。它通过 OneBot 11 接入 QQ，通过可配置 CLI
+接入飞书，并用可视化网络统一表达 Bot、群组和知识库之间的管理、观察、归档、搜索与同步关系。
+
+项目最初服务于特定社区的群治理需求，现在已发展为通用的多平台控制面：连接层负责平台协议，
+事务层负责审批、记录、分析和同步，管理端负责配置、审计和资源编排。
+
+> [!IMPORTANT]
+> NeoQBot 默认采用审慎策略：模型输出只作为管理线索，高风险操作应保留人工确认。接入非官方
+> QQ 客户端或协议实现前，请自行评估平台条款、账号风控与数据合规要求。
+
+## 核心能力
+
+- **网状资源编排**：以类似节点编辑器的方式连接多个 QQ Bot、飞书 Bot、QQ群、飞书群和知识库。
+- **多账号与多群协作**：一个 Bot 可管理多个群，多个 Bot 也可共同观察或管理同一群。
+- **分级事务配置**：分别启用入群管理、纯记录、消息分析、风险处理和公告同步。
+- **群组工作台**：集中查看群消息、公告、入群请求、分析记录以及当前管理关系。
+- **可审计控制面**：所有关键任务、配置更新、登录和冲突均写入 SQLite 审计记录。
+- **安全配置保存**：敏感字段遮罩、环境变量注入、配置版本冲突检测和原子写入。
+- **桌面式管理界面**：Win11 / Codex / VS Code 风格的深浅色工作台、命令面板与响应式布局。
+- **可替换适配器**：OneBot、飞书 CLI 和 OpenAI-compatible LLM 均隔离在端口与适配器层。
+
+## 架构概览
 
 ```mermaid
 flowchart LR
-    QQ["真人 QQ / NapCat"] -->|"OneBot 11 Webhook"| API["MUA-Bot FastAPI"]
-    API --> Q["事件工作队列"]
-    Q --> JOIN["入群审核服务"]
-    Q --> MSG["消息采集"]
-    DB[("SQLite 审计库")]
-    JOIN --> LLM["Agnes / OpenAI-compatible LLM"]
-    JOIN --> DB
-    MSG --> DB
-    TIMER["内置调度器"] --> MOD["5 分钟窗口风控"]
-    TIMER --> NOTICE["公告同步"]
-    MOD --> LLM
-    MOD -->|"仅告警"| QQ
-    NOTICE --> QQ
-    NOTICE --> DB
-    NOTICE --> FS["飞书 CLI"]
-    QQ -->|"管理员：搜索 ..."| SEARCH["飞书检索服务"]
-    SEARCH --> FS
-    SEARCH --> QQ
-    ASTR["AstrBot 可选控制面"] -->|"Bearer API"| API
-    GUI["浏览器管理后台 :6688"] -->|"Session + CSRF"| API
+    QQ["QQ / NapCat"] -->|"OneBot 11"| API["NeoQBot API"]
+    FS["Feishu CLI"] <--> API
+    LLM["OpenAI-compatible LLM"] <--> API
+    API --> RUNTIME["Task Runtime"]
+    RUNTIME --> DB["SQLite + Audit Log"]
+    GUI["Web Control Plane"] <--> API
+    GUI --> GRAPH["Bot · Group · Knowledge Graph"]
 ```
 
-核心业务不依赖具体 QQ 或飞书客户端。QQ 被限制在 OneBot 适配器内，飞书命令被限制在
-不经过 shell 的 argv 模板内，因此外部工具升级时不必重写审核、风控和归档逻辑。
+运行时不会把平台实现细节扩散到业务服务中。更换 OneBot 实现、飞书命令行工具或模型供应商时，
+通常只需要调整连接配置或替换适配器。
 
-更完整的组件、状态机和迭代计划见 [架构文档](docs/ARCHITECTURE.md)，画布操作、连接语义和
-典型拓扑见 [资源编排指南](docs/ORCHESTRATION.md)。
+## 资源编排
 
-## 重要边界
+资源编排是 NeoQBot 的核心入口。画布支持以下节点：
 
-1. NapCat、LLOneBot 等真人 QQ 接入属于非官方协议方案，可能违反平台条款、触发风控或
-   封号。请自行确认合规性，使用专用低权限账号，并保留人工接管能力。
-2. MUA-Bot 不自动禁言、踢人或处罚群成员。模型只生成风险线索，最终由管理员结合上下文
-   处理，以减少误伤。
-3. 飞书 CLI 的命令面仍在快速演进。MUA-Bot 不猜测某个版本的子命令，而是提供安全的
-   argv 模板契约；安装当前官方版本后根据 `feishu --help` 配置一次即可。
-4. 群消息、申请内容和公告会进入本地 SQLite。部署者必须取得必要授权，限制数据库文件
-   权限，并制定保留、备份和删除策略。
-5. 通用执行代理（Codex、Claude Code 等）不直接接收群成员原文并执行命令。群消息可能
-   包含提示词注入，热路径只允许返回经过 Pydantic 校验的结构化模型结果。
-6. GUI 初始账号为 `admin`、密码为 `muaadmin`，首次登录会被强制要求修改。生产环境仍应
-   配置 HTTPS、限制 6688/6099 端口来源，并为 NapCat WebUI 设置独立强密码。
+| 节点 | 用途 |
+| --- | --- |
+| QQ Bot | OneBot / NapCat 账号、二维码登录、事务配置 |
+| 飞书 Bot | CLI 登录态、归档和搜索能力 |
+| QQ群 | 消息、公告、审核、分析与管理关系 |
+| 飞书群 | 协作、通知与知识流转目标 |
+| 知识库 | 政策、手册、问答或外部知识资源 |
 
-## 目录
+连接关系包括 `manages`、`observes`、`archives_to`、`searches` 和 `syncs`。编排配置是 QQ
+托管群关系的权威来源，保存时会同步到各 Bot 的有效配置。
 
-```text
-src/mua_bot/
-  adapters/             OneBot、LLM、飞书 CLI 适配器
-  app.py                 FastAPI Webhook 和管理 API
-  auth.py / gui.py       GUI 认证、会话、配置热加载与管理 API
-  web/                   内置中文前端页面、样式和交互
-  cli.py                 serve/doctor/手动任务命令
-  config.py              YAML + MUA_* 环境变量配置、编排资源与连接模型
-  database.py            SQLite schema 和审计仓储
-  events.py              OneBot 事件标准化与路由
-  runtime.py             工作队列和周期调度
-  services.py            审批、风控、公告、搜索用例
-integrations/
-  astrbot_plugin_mua_control/  可选 AstrBot 管理插件
-tests/                   核心幂等、风控、配置与签名测试
+完整说明见 [资源编排指南](docs/ORCHESTRATION.md)。
+
+## 快速开始
+
+### 环境要求
+
+- Python 3.11 或更高版本
+- 推荐使用 [uv](https://docs.astral.sh/uv/)
+- 可选：Docker Compose、NapCatQQ、飞书 CLI、OpenAI-compatible 模型端点
+
+### 本地运行
+
+```bash
+git clone https://github.com/LYOfficial/NeoQBot.git
+cd NeoQBot
+uv sync --extra dev
+cp config.example.yaml config.yaml
+uv run neoqbot --config config.yaml init-db
+uv run neoqbot --config config.yaml serve
 ```
 
-## Windows 本地开发
-
-要求 Python 3.11+。PowerShell：
+Windows PowerShell 可使用：
 
 ```powershell
 Copy-Item config.example.yaml config.yaml
-Copy-Item .env.example .env
-py -3.12 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -e ".[dev]"
-mua-bot --config config.yaml init-db
-mua-bot --config config.yaml show-config
-mua-bot --config config.yaml serve
+uv run neoqbot --config config.yaml init-db
+uv run neoqbot --config config.yaml serve
 ```
 
-服务启动后：
+打开 <http://127.0.0.1:8080/gui/>。初始账号为 `admin`，初始密码为 `neoqbotadmin`；首次登录
+必须修改密码。
 
-- `GET http://127.0.0.1:8080/healthz`：进程健康；
-- `GET http://127.0.0.1:8080/readyz`：数据库就绪；
-- `POST http://127.0.0.1:8080/webhooks/onebot`：OneBot 反向 HTTP 事件；
-- `GET http://127.0.0.1:8080/docs`：OpenAPI 页面。
-- `GET http://127.0.0.1:8080/gui/`：本地管理 GUI。
+## Docker 部署
 
-所有 YAML 字段都可由嵌套环境变量覆盖，例如：
-
-```powershell
-$env:MUA_APP__DRY_RUN = "false"
-$env:MUA_LLM__API_KEY = "..."
-$env:MUA_QQ__MANAGED_GROUP_IDS = '["123456789"]'
+```bash
+cp .env.example .env
+cp config.example.yaml config.yaml
+docker compose build
+docker compose up -d
+docker compose logs -f neoqbot
 ```
 
-## QQ / OneBot 配置
+默认管理端地址为 `http://服务器地址:6688/gui/`。Compose 同时准备持久化数据、NapCat 配置、
+QQ 登录态、二维码缓存和飞书用户目录。生产环境应限制管理端和 NapCat WebUI 的监听地址，并由
+HTTPS 反向代理提供访问。
 
-推荐让真人 QQ 客户端侧车（例如 NapCatQQ）只负责登录和 OneBot 协议，MUA-Bot 不保存 QQ
-密码。
+常用检查：
 
-### Bot、群与知识库编排
+```bash
+docker compose ps
+docker compose exec neoqbot neoqbot --config /app/data/config.yaml doctor
+curl http://127.0.0.1:6688/healthz
+curl http://127.0.0.1:6688/readyz
+```
 
-GUI 的“资源编排”页面提供类似节点编辑器的工作台。可以在空白画布右键或点击“新建资源”，
-创建 QQ Bot、飞书 Bot、QQ群、飞书群和知识库；拖动节点右侧端口到另一个节点即可建立连接，
-在右侧检查器中可调整连接语义（管理、监听、归档、检索或同步）。画布布局和连接保存在
-`orchestration.resources`、`orchestration.edges` 与 `orchestration.layout`。
+## 配置
 
-旧配置无需手工迁移：`managed_group_ids` 会在第一次打开编排页时自动变成 QQ 群节点和
-`manages` 连接；保存编排时，QQ Bot 到 QQ 群的管理或监听连接会同步回
-`managed_group_ids`，而后端配置模型也会强制保持这个不变量，因此
-现有 Runtime、Webhook 和事务服务仍保持兼容。
+主配置文件为 `config.yaml`，完整字段见 [config.example.yaml](config.example.yaml)。环境变量使用
+`NEOQBOT_` 前缀和双下划线表示嵌套字段：
 
-新版 GUI 将群归属统一收口到“资源编排”，系统设置中的 QQ 账号页只管理连接、凭据和管理员，
-并显示当前已连接群数量，避免表单和画布同时修改同一关系。配置保存带修订号校验，多标签页或
-多管理员并发修改时会明确提示冲突，不会用旧页面静默覆盖新配置。
+```bash
+NEOQBOT_APP__ADMIN_API_TOKEN=replace-with-a-long-random-token
+NEOQBOT_LLM__API_KEY=replace-with-provider-key
+```
 
-每个 QQ Bot 使用独立的
-`onebot_base_url`、Token、Webhook Secret、托管群与管理员列表；反向 Webhook 地址为：
+敏感值优先使用环境变量或只读 secret 文件，不要提交真实 Token、Cookie、二维码、数据库或
+`config.yaml`。QQ 与飞书 Bot 的凭据应配置在各 Bot 的只读 secret 文件中。NeoQBot 仅读取
+`NEOQBOT_` 前缀的应用配置变量。
+
+## 命令行
 
 ```text
-http://mua-bot:8080/webhooks/onebot/<bot-id>
+neoqbot --config config.yaml serve
+neoqbot --config config.yaml init-db
+neoqbot --config config.yaml doctor
+neoqbot --config config.yaml show-config
+neoqbot --config config.yaml run-moderation
+neoqbot --config config.yaml sync-announcements
+neoqbot --config config.yaml prune
+neoqbot init-napcat
 ```
 
-旧的 `/webhooks/onebot` 地址仍指向第一个 Bot，原有单账号配置也会自动映射为 `default` Bot。
-保存新版 GUI 配置后，账号会写入 `qq.bots` / `feishu.bots`。
+## 安全边界
 
-QQ Bot 下的事务依赖如下：
+- 首次联调保持 `app.dry_run: true`，确认连接、鉴权和审计链路后再启用写操作。
+- 为管理 API、OneBot 和 NapCat WebUI 设置独立随机 Token。
+- 管理界面应通过 HTTPS 暴露，并在生产环境启用安全 Cookie。
+- NeoQBot 不保存 QQ 密码；二维码由对应 NapCat 实例产生并通过受保护接口展示。
+- 自动审批、拒绝、通知和其他账号操作应从最小权限、少量群组开始灰度。
+- SQLite、消息归档、飞书登录态和 NapCat 登录态都应纳入加密备份与访问控制。
 
-- 入群管理：只开“检测入群消息”时仅写入 GUI/SQLite；“执行入群管理”会自动打开检测，
-  再按置信度和自动同意/拒绝设置执行或转人工。
-- 消息检测：“长期检测”负责消息到达即登记；“轮询检测”按间隔处理最近窗口；“分析”会
-  自动开启轮询并生成报告；“处理”会自动开启轮询和分析，并在命中风险时通知管理员。
-- 公告同步：“一键同步”会抓取所管群的全部公告并写入公告库；“自动同步”按配置间隔持续
-  抓取新版本。公告事务可指定负责归档的飞书 Bot ID。
+## 项目结构
 
-在 OneBot 端完成以下设置：
-
-1. 启用 HTTP API，例如 `0.0.0.0:3000`，配置 access token；
-2. 启用反向 HTTP/Webhook，地址为
-   `http://mua-bot:8080/webhooks/onebot`（同一 Compose 网络）或开发机对应地址；
-3. 如实现支持事件 secret/HMAC-SHA1，设置与 `qq.webhook_secret` 相同的值；
-4. 确认实现支持 `set_group_add_request`、`send_private_msg`、`get_login_info`；
-5. 公告属于扩展 API。MUA-Bot 会依次尝试 `qq.announcement_actions` 中的动作名，请按所用
-   OneBot 实现的当前文档调整。
-
-Docker 部署过程不要求交互登录。`init-volumes` 会生成并持久化随机 OneBot Token 与 NapCat WebUI
-Token，自动启用 `0.0.0.0:3000` HTTP API，并把反向 HTTP 配置为 MUA-Bot Webhook。NapCat 会在后台
-把当前二维码写入共享缓存卷；容器全部启动后，登录 MUA-Bot GUI，在“资源编排”页面点击“扫码登录”
-即可直接看到二维码。“获取新二维码”会调用 NapCat 刷新 API，而不是重复读取旧图片；页面也会轮询
-NapCat 与 OneBot 两侧状态。6099 端口只作为高级设置入口，所需 Token 可在扫码窗口中一键复制。
-
-NapCat 控制台中反复出现 `Login Error, ErrCode: 3` 通常表示上一张二维码无人扫描并已过期，
-不表示 MUA-Bot 部署失败。只要 `qq-bridge` 仍为 `running`，应在 GUI 中扫描最新二维码。
-
-先保持 `app.dry_run: true`，执行：
-
-```powershell
-mua-bot --config config.yaml doctor
-mua-bot --config config.yaml sync-announcements
-mua-bot --config config.yaml run-moderation
+```text
+src/neoqbot/                         NeoQBot Python 包与 CLI 入口
+  adapters/                          QQ、飞书与 LLM 适配器
+  web/                               管理端静态资源
+  app.py                             FastAPI 应用与管理 API
+  config.py                          配置、校验与编排模型
+  database.py                        SQLite 数据与审计层
+  services.py                        入群、消息分析与公告事务
+  runtime.py                         调度、队列和生命周期
+integrations/astrbot_plugin_neoqbot_control/
+assets/branding/                      Logo 原图、SVG 与品牌说明
+docs/                                架构、编排和飞书 CLI 文档
 ```
 
-数据库和日志符合预期后，再设置 `dry_run: false`。自动审批还需要单独将
-`join_approval.auto_approve` 改为 `true`；自动拒绝默认建议长期关闭。
+项目名称、Python 包、CLI、服务名与环境变量均统一为 NeoQBot。
 
-## Agnes AI / 大模型
-
-只要 Agnes AI 提供 OpenAI-compatible `/v1/chat/completions` 接口，即可配置：
-
-```yaml
-llm:
-  driver: openai_compatible
-  base_url: https://your-agnes-endpoint.example/v1
-  model: your-agnes-model
-```
-
-密钥使用环境变量 `MUA_LLM__API_KEY`。模型必须支持 JSON object 输出。审核响应会再次经过
-严格 schema 校验；请求失败、JSON 无效或置信度不足时，入群申请自动降级到人工审核。
-如果 Agnes 兼容接口不接受 OpenAI 的 `response_format` 参数，可设置
-`llm.json_response_format: false`，MUA-Bot 仍会从文本中提取并校验 JSON。
-
-`llm.driver: rules` 只用于离线联调。它无法理解上下文，不应作为正式内容治理模型。
-
-## 飞书 CLI
-
-从[飞书 CLI 官方页面](https://www.feishu.cn/feishu-cli)安装并登录真人飞书账号。由于 CLI
-的包名和子命令会随发布版本变化，先运行：
+## 开发
 
 ```bash
-feishu --version
-feishu --help
+uv sync --extra dev
+uv run ruff check .
+uv run ruff format --check src
+node --check src/neoqbot/web/app.js
 ```
 
-然后在 `feishu.command_templates` 中配置两个动作：
+提交变更时请同步更新相关文档。仓库不内置 GitHub Actions，维护者应在合并前于受控环境运行上述检查。
 
-- `archive_announcement`：向目标电子表格/多维表格新增记录；可使用
-  `{payload_json}`、`{group_id}`、`{announcement_id}`、`{title}`、`{content}`、
-  `{author_id}`、`{published_at}`；
-- `search`：搜索云文档；可使用 `{query}` 和 `{limit}`，标准输出必须为 JSON 数组，或
-  带 `items`/`data`/`results` 数组的 JSON 对象。
+## 文档
 
-要在 GUI 中完成人类账号授权，再配置 `login`、`logout` 和可选 `doctor` 模板。GUI 会执行
-这些命令，并展示 CLI 返回的授权链接、二维码文本或状态 JSON。
+- [架构与工作流](docs/ARCHITECTURE.md)
+- [资源编排指南](docs/ORCHESTRATION.md)
+- [飞书 CLI 集成](docs/FEISHU_CLI.md)
+- [品牌资源](assets/branding/README.md)
+- [English README](README.en.md)
+- [日本語 README](README.ja.md)
 
-模板中的每一项都是一个独立 argv，程序使用 `create_subprocess_exec` 直接执行，不经过
-PowerShell/Bash。完整契约和包装器建议见 [飞书 CLI 接口说明](docs/FEISHU_CLI.md)。
+## 参与贡献
 
-配置完成后设置：
+欢迎通过 [Issues](https://github.com/LYOfficial/NeoQBot/issues) 提交缺陷、适配器需求和设计提案，
+也欢迎直接提交 Pull Request。涉及平台写操作或安全边界的变更，请在说明中包含风险和验证方式。
 
-```yaml
-feishu:
-  enabled: true
-  driver: cli
-  executable: feishu
-```
+## 许可证
 
-公告先保存到 SQLite，再同步飞书。飞书不可用时记录保持 `failed`，下一轮自动重试，不会
-丢失本地档案。
-
-## Ubuntu / Debian Docker 部署
-
-```bash
-docker compose up -d --build
-```
-
-`init-volumes` 一次性服务会自动创建绝对路径目录、生成 NapCat/OneBot 密钥与配置、设置 MUA-Bot
-与飞书目录的 UID `10001` 权限，然后退出；MUA-Bot 和 NapCat 会在它成功后自动启动。因此不再需要手工执行
-`mkdir`、`chown`，也不需要 `--profile napcat`。
-NapCat 二维码缓存会写入
-`/var/lib/docker/volumes/mua-bot-napcat-cache/_data/qrcode.png`，并以只读方式挂载给 MUA-Bot；
-该文件只能通过已登录的 GUI 接口读取。
-
-Compose 已为端口、路径和初始账号提供默认值，不创建 `.env` 也可以直接启动。需要修改
-端口、NapCat 镜像或安装飞书 CLI 时，再执行 `cp .env.example .env` 并编辑该文件。查看日志：
-
-```bash
-docker compose logs -f mua-bot
-```
-
-### 端口说明
-
-当前 Compose 默认占用宿主机 3 个 TCP 端口：
-
-| 宿主机端口 | 默认监听地址 | 映射到容器 | 用途 | 外部可访问性 |
-|---:|---|---|---|---|
-| `6688` | `0.0.0.0` | `mua-bot:8080` | GUI、REST API、OneBot Webhook、健康检查和 OpenAPI | 默认可从网络访问 |
-| `6099` | `0.0.0.0` | `qq-bridge:6099` | NapCat WebUI、QQ 扫码登录与 NapCat 配置 | 默认可从网络访问 |
-| `6000` | `127.0.0.1` | `qq-bridge:3000` | OneBot HTTP API 的宿主机调试入口 | 仅宿主机本地可访问 |
-
-端口可在 `.env` 中修改：
-
-```dotenv
-MUA_GUI_BIND_IP=0.0.0.0
-MUA_GUI_PORT=6688
-NAPCAT_WEBUI_BIND_IP=0.0.0.0
-NAPCAT_WEBUI_PORT=6099
-ONEBOT_HTTP_PORT=6000
-```
-
-Docker 容器内部监听端口：
-
-| 容器/服务 | 容器内部端口 | 协议 | 用途 |
-|---|---:|---|---|
-| `mua-bot` | `8080` | TCP/HTTP | FastAPI、GUI、管理 API、Webhook、健康检查 |
-| `qq-bridge` | `3000` | TCP/HTTP | OneBot API，MUA-Bot 使用 `http://qq-bridge:3000` 访问 |
-| `qq-bridge` | `6099` | TCP/HTTP | NapCat WebUI |
-| `init-volumes` | 无 | — | 只负责初始化目录权限，完成后退出 |
-
-容器间通信不经过宿主机映射：MUA-Bot 调用 QQ 使用
-`http://qq-bridge:3000`；NapCat 向 MUA-Bot 推送事件使用
-`http://mua-bot:8080/webhooks/onebot`。飞书 CLI 和大模型调用只产生向外的 HTTPS 连接，
-不会额外监听宿主机端口。
-
-启动后访问：
-
-- `http://服务器IP:6688/gui/`：MUA-Bot 管理后台；
-- 初始管理员：`admin` / `muaadmin`，首次登录强制修改密码；
-- `http://服务器IP:6099/`：NapCat 高级设置页面；QQ 扫码登录无需直接访问此端口；
-- NapCat WebUI Token 持久化在 MUA 数据卷的 `secrets/napcat-webui.token`，管理员可在扫码窗口复制；
-- OneBot Token 持久化在 MUA 数据卷的 `secrets/napcat-onebot.token`，MUA-Bot 与 NapCat 自动共同读取；
-- 配置自动写入并持久化到
-  `/var/lib/docker/volumes/mua-bot-data/_data/config.yaml`；
-- 飞书 CLI 真人账号登录态持久化到
-  `/var/lib/docker/volumes/mua-bot-feishu-home/_data`；
-- OneBot Webhook 在 Compose 内仍使用 `http://mua-bot:8080/webhooks/onebot`。
-
-6688 和 6099 默认监听所有网卡，便于首次远程部署；6000 只监听 `127.0.0.1`。生产环境应
-使用云防火墙限制 6688/6099 的来源，或在
-`.env` 中把 `MUA_GUI_BIND_IP`、`NAPCAT_WEBUI_BIND_IP` 改为 `127.0.0.1` 后通过 SSH 隧道或
-HTTPS 反向代理访问。不同 NapCat 镜像版本的容器内路径可能变化，升级前必须核对其官方
-说明，并备份 `/var/lib/docker/volumes/mua-bot-napcat-config/_data` 与
-`/var/lib/docker/volumes/mua-bot-qq-session/_data`。
-
-以上路径假设 `docker info --format '{{.DockerRootDir}}'` 输出 `/var/lib/docker`。如果服务器
-使用 rootless Docker 或自定义 `data-root`，请把 Compose 和命令中的前缀替换为实际目录。
-
-Docker 镜像默认不安装飞书 CLI。若官方 CLI 以 npm 包发布，可在 `.env` 中填写当前包名：
-
-```dotenv
-INSTALL_FEISHU_CLI=true
-FEISHU_CLI_PACKAGE=官方页面给出的包名
-```
-
-如果 CLI 不是 npm 包，请按官方方式构建派生镜像，或把可执行文件和登录态以只读/最小
-权限卷挂载进容器。不要把登录 cookie、token 或 `.env` 提交到 Git。
-
-## AstrBot 控制面
-
-将 `integrations/astrbot_plugin_mua_control` 复制到 AstrBot 的
-`data/plugins/astrbot_plugin_mua_control`，配置：
-
-```dotenv
-MUA_API_URL=http://mua-bot:8080
-MUA_API_TOKEN=与 MUA_APP__ADMIN_API_TOKEN 相同
-MUA_ASTRBOT_ADMIN_IDS=管理员QQ号1,管理员QQ号2
-```
-
-插件提供 `/mua_status`、`/mua_moderate`、`/mua_sync`。只有显式管理员 ID 能调用。AstrBot
-可以继续承载对话、知识库或 Agent Plan；高风险的审批执行仍由 MUA-Bot 的策略阈值、审计
-和幂等状态机控制。
-
-## 管理 API 与运维
-
-管理 API 必须配置 `app.admin_api_token`，并使用：
-
-```bash
-curl -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/api/v1/status
-curl -X POST -H "Authorization: Bearer $TOKEN" \
-  http://127.0.0.1:8080/api/v1/jobs/moderation
-curl -X POST -H "Authorization: Bearer $TOKEN" \
-  http://127.0.0.1:8080/api/v1/jobs/announcements
-curl -X POST -H "Authorization: Bearer $TOKEN" \
-  http://127.0.0.1:8080/api/v1/jobs/maintenance
-```
-
-Docker 宿主机上将示例地址的 `8080` 替换为 `6688`。GUI 使用独立的管理员会话、HttpOnly
-Cookie 和 CSRF 校验，不依赖管理 API Token。
-
-SQLite 在容器内位于 `/app/data/mua-bot.db`，Docker 宿主机对应
-`/var/lib/docker/volumes/mua-bot-data/_data/mua-bot.db`。备份时同时保留主文件以及可能存在的
-`-wal`、`-shm` 文件，或在停止服务后复制。生产环境建议定期快照整个
-`/var/lib/docker/volumes/mua-bot-data/_data` 目录。
-开启 QQ Bot 的“纯记录群消息”后，原始事件还会按
-`/app/data/group-message-records/<bot-id>/<group-id>/YYYY-MM-DD.jsonl` 写入同一个持久化卷；
-每日维护会按 `retention.message_days` 同步清理过期的 SQLite 消息和 JSONL 日文件。
-`retention` 配置会每日删除过期消息、申请、风控运行和审计日志；公告版本永久保留，除非
-管理员另行制定归档删除流程。
-
-## 测试
-
-```bash
-ruff check .
-ruff format --check .
-pytest
-docker compose config
-```
-
-## 上线清单
-
-- [ ] OneBot 和飞书均使用专用低权限账号；
-- [ ] Webhook secret、OneBot token、管理 API token 均已设置且不同；
-- [ ] `doctor` 全部通过，公告可本地归档并可写入飞书；
-- [ ] 至少观察一周 `dry_run` 审核结果并人工抽样；
-- [ ] 入群政策与群规由管理员书面确认；
-- [ ] 只开启 `auto_approve`，保留拒绝和处罚为人工动作；
-- [ ] 数据目录权限、备份、保留期限和事故响应流程已经配置；
-- [ ] 非官方 QQ 客户端升级前有回滚方案。
-
-本项目采用 GPL-3.0-or-later，详见 [LICENSE](LICENSE)。
+NeoQBot 基于 [GNU General Public License v3.0](LICENSE) 发布。

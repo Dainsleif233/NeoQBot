@@ -1,6 +1,6 @@
 services:
   init-volumes:
-    image: mua-bot:local
+    image: neoqbot:local
     pull_policy: never
     user: "0:0"
     restart: "no"
@@ -8,23 +8,28 @@ services:
       - sh
       - -ec
       - |
-        mua-bot init-napcat \
+        test -f /bootstrap/config.yaml
+        if [ ! -f /mnt/neoqbot-data/config.yaml ]; then
+          cp /bootstrap/config.yaml /mnt/neoqbot-data/config.yaml
+        fi
+        neoqbot init-napcat \
           --napcat-config-dir /mnt/napcat-config \
-          --secret-dir /mnt/mua-data/secrets \
-          --webhook-url http://mua-bot:8080/webhooks/onebot/default
-        chown -R 10001:10001 /mnt/mua-data /mnt/feishu-home
-        chmod 600 /mnt/mua-data/secrets/napcat-onebot.token /mnt/mua-data/secrets/napcat-webui.token
-        chmod 700 /mnt/mua-data /mnt/feishu-home /mnt/napcat-config /mnt/qq-session
+          --secret-dir /mnt/neoqbot-data/secrets \
+          --webhook-url http://neoqbot:8080/webhooks/onebot/default
+        chown -R 10001:10001 /mnt/neoqbot-data /mnt/feishu-home
+        chmod 600 /mnt/neoqbot-data/secrets/napcat-onebot.token /mnt/neoqbot-data/secrets/napcat-webui.token
+        chmod 700 /mnt/neoqbot-data /mnt/feishu-home /mnt/napcat-config /mnt/qq-session
         chmod 755 /mnt/napcat-cache
     volumes:
-      - /var/lib/docker/volumes/mua-bot-data/_data:/mnt/mua-data
-      - /var/lib/docker/volumes/mua-bot-feishu-home/_data:/mnt/feishu-home
-      - /var/lib/docker/volumes/mua-bot-napcat-config/_data:/mnt/napcat-config
-      - /var/lib/docker/volumes/mua-bot-qq-session/_data:/mnt/qq-session
-      - /var/lib/docker/volumes/mua-bot-napcat-cache/_data:/mnt/napcat-cache
+      - ./config.yaml:/bootstrap/config.yaml:ro
+      - neoqbot-data:/mnt/neoqbot-data
+      - neoqbot-feishu-home:/mnt/feishu-home
+      - neoqbot-napcat-config:/mnt/napcat-config
+      - neoqbot-qq-session:/mnt/qq-session
+      - neoqbot-napcat-cache:/mnt/napcat-cache
 
-  mua-bot:
-    image: mua-bot:local
+  neoqbot:
+    image: neoqbot:local
     build:
       context: .
       args:
@@ -38,13 +43,13 @@ services:
       - path: .env
         required: false
     volumes:
-      - /var/lib/docker/volumes/mua-bot-data/_data:/app/data
+      - neoqbot-data:/app/data
       # 持久化飞书 CLI 可能写入 ~/.config、~/.local 等位置的真人账号登录态。
-      - /var/lib/docker/volumes/mua-bot-feishu-home/_data:/home/mua
+      - neoqbot-feishu-home:/home/neoqbot
       # NapCat 在未登录时持续更新此二维码；后台只读并通过登录后的 GUI 提供。
-      - /var/lib/docker/volumes/mua-bot-napcat-cache/_data:/app/napcat-cache:ro
+      - neoqbot-napcat-cache:/app/napcat-cache:ro
     ports:
-      - "${MUA_GUI_BIND_IP:-0.0.0.0}:${MUA_GUI_PORT:-6688}:8080"
+      - "${NEOQBOT_GUI_BIND_IP:-0.0.0.0}:${NEOQBOT_GUI_PORT:-6688}:8080"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     security_opt:
@@ -55,7 +60,7 @@ services:
     tmpfs:
       - /tmp:size=64m,mode=1777
 
-  # 可选真人 QQ OneBot 侧车。部署不等待交互登录；启动后在 MUA-Bot GUI 扫描共享缓存中的二维码。
+  # 可选真人 QQ OneBot 侧车。部署不等待交互登录；启动后在 NeoQBot GUI 扫描共享缓存中的二维码。
   # 非官方协议可能违反平台条款、触发风控或封号；建议使用专用低权限账号。
   qq-bridge:
     image: ${NAPCAT_IMAGE:-mlikiowa/napcat-docker:latest}
@@ -69,9 +74,16 @@ services:
     environment:
       ACCOUNT: ${QQ_ACCOUNT:-}
     volumes:
-      - /var/lib/docker/volumes/mua-bot-napcat-config/_data:/app/napcat/config
-      - /var/lib/docker/volumes/mua-bot-qq-session/_data:/app/.config/QQ
-      - /var/lib/docker/volumes/mua-bot-napcat-cache/_data:/app/napcat/cache
+      - neoqbot-napcat-config:/app/napcat/config
+      - neoqbot-qq-session:/app/.config/QQ
+      - neoqbot-napcat-cache:/app/napcat/cache
     ports:
       - "${NAPCAT_WEBUI_BIND_IP:-0.0.0.0}:${NAPCAT_WEBUI_PORT:-6099}:6099"
       - "127.0.0.1:${ONEBOT_HTTP_PORT:-6000}:3000"
+
+volumes:
+  neoqbot-data:
+  neoqbot-feishu-home:
+  neoqbot-napcat-config:
+  neoqbot-qq-session:
+  neoqbot-napcat-cache:

@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <title>NeoQBot 管理中心</title>
+  <link rel="icon" type="image/png" href="/gui/assets/img/neoqbot-logo.png">
+  <link rel="apple-touch-icon" href="/gui/assets/img/neoqbot-logo.png">
+  <link rel="stylesheet" href="/gui/assets/app.css?v=0.4.0">
+</head>
+<body>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <main id="login-view" class="auth-layout hidden">
+    <section class="auth-brand">
+      <img class="brand-logo hero-logo" src="/gui/assets/img/neoqbot-logo.png" alt="NeoQBot">
+      <p class="eyebrow">Bots · Groups · Knowledge</p>
+      <h1>让每个 Bot<br>只做它该做的事。</h1>
+      <p class="lead">多账号接入、事务拆分、消息登记、分析判决与公告归档，都在一个克制的控制台里完成。</p>
+    </section>
+    <section class="auth-card">
+      <div class="auth-card-head">
+        <img class="brand-logo card-logo" src="/gui/assets/img/neoqbot-logo.png" alt="NeoQBot">
+        <div><p class="eyebrow">NeoQBot Console</p><h2>管理员登录</h2></div>
+      </div>
+      <p class="muted">首次部署使用 admin / neoqbotadmin，登录后必须修改密码。</p>
+      <form id="login-form" class="stack-lg">
+        <label>用户名<input id="login-username" autocomplete="username" value="admin" required></label>
+        <label>密码<input id="login-password" type="password" autocomplete="current-password" required></label>
+        <button class="button primary full" type="submit">进入管理中心</button>
+      </form>
+      <p class="fine-print">登录表示你确认有权管理相关 QQ 群和飞书数据。</p>
+    </section>
+  </main>
+
+  <main id="password-view" class="auth-layout hidden">
+    <section class="auth-brand">
+      <img class="brand-logo hero-logo" src="/gui/assets/img/neoqbot-logo.png" alt="NeoQBot">
+      <p class="eyebrow">Security checkpoint</p>
+      <h1>先换掉默认密码。</h1>
+      <p class="lead">这是保护 QQ 登录态、飞书文档与群聊审计数据的第一道边界。</p>
+    </section>
+    <section class="auth-card">
+      <div class="auth-card-head">
+        <img class="brand-logo card-logo" src="/gui/assets/img/neoqbot-logo.png" alt="NeoQBot">
+        <div><p class="eyebrow">首次登录</p><h2>设置新密码</h2></div>
+      </div>
+      <p class="muted">至少 10 个字符，不能继续使用默认密码。</p>
+      <form id="password-form" class="stack-lg">
+        <label>当前密码<input id="current-password" type="password" autocomplete="current-password" required></label>
+        <label>新密码<input id="new-password" type="password" autocomplete="new-password" minlength="10" required></label>
+        <label>确认新密码<input id="confirm-password" type="password" autocomplete="new-password" minlength="10" required></label>
+        <button class="button primary full" type="submit">保存并继续</button>
+      </form>
+    </section>
+  </main>
+
+  <div id="app-view" class="app-shell hidden">
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <img class="brand-logo sidebar-logo" src="/gui/assets/img/neoqbot-logo.png" alt="NeoQBot">
+        <div><strong>NeoQBot</strong><span>Control plane</span></div>
+      </div>
+      <nav id="main-nav">
+        <button class="nav-item active" data-view="dashboard"><span class="nav-glyph">⌂</span><span>运行概览</span></button>
+        <button class="nav-item" data-view="integrations"><span class="nav-glyph">⌘</span><span>资源编排</span></button>
+        <button class="nav-item" data-view="settings"><span class="nav-glyph">⚙</span><span>系统设置</span></button>
+        <button class="nav-item" data-view="records"><span class="nav-glyph">≡</span><span>记录与审计</span></button>
+      </nav>
+      <div class="sidebar-footer">
+        <div class="user-chip"><span class="avatar">A</span><div><strong id="current-user">admin</strong><small>Administrator</small></div></div>
+        <button id="logout-button" class="icon-button" title="退出登录">退出</button>
+      </div>
+    </aside>
+
+    <div class="workspace">
+      <header class="topbar">
+        <button id="menu-button" class="menu-button" aria-label="打开导航">菜单</button>
+        <div><p class="eyebrow" id="page-kicker">Overview</p><h1 id="page-title">运行概览</h1></div>
+        <div class="topbar-actions">
+          <span id="connection-pill" class="pill">服务在线</span>
+          <button id="command-button" class="button ghost compact command-trigger" type="button"><span>命令</span><kbd>Ctrl K</kbd></button>
+          <button id="theme-button" class="button ghost compact" type="button">浅色</button>
+          <button id="refresh-button" class="button ghost compact" type="button">刷新</button>
+        </div>
+      </header>
+
+      <section id="view-dashboard" class="view active">
+        <div id="security-banner" class="banner hidden"></div>
+        <div class="metric-grid">
+          <article class="metric-card"><span>入群申请</span><strong id="count-joins">—</strong><small>已登记总数</small></article>
+          <article class="metric-card"><span>群聊消息</span><strong id="count-messages">—</strong><small>保留期内</small></article>
+          <article class="metric-card"><span>分析报告</span><strong id="count-runs">—</strong><small>五分钟窗口</small></article>
+          <article class="metric-card"><span>公告版本</span><strong id="count-notices">—</strong><small>公告库记录</small></article>
+        </div>
+        <div class="two-column">
+          <article class="panel">
+            <div class="panel-heading"><div><p class="eyebrow">Bot chain</p><h2>协同链路</h2></div><span id="dry-run-badge" class="pill">读取中</span></div>
+            <div id="bot-summary" class="bot-summary"></div>
+          </article>
+          <article class="panel">
+            <div class="panel-heading"><div><p class="eyebrow">Manual run</p><h2>立即执行</h2></div></div>
+            <div class="action-grid">
+              <button class="action-button" data-job="moderation"><span>运行消息分析</span><small>所有已启用的分析事务</small></button>
+              <button class="action-button" data-job="announcements"><span>一键同步全部公告</span><small>所有已启用的公告事务</small></button>
+              <button class="action-button" data-job="maintenance"><span>清理过期数据</span><small>应用数据保留策略</small></button>
+            </div>
+            <pre id="job-output" class="console-output">等待操作…</pre>
+          </article>
+        </div>
+        <article class="panel">
+          <div class="panel-heading"><div><p class="eyebrow">Diagnostics</p><h2>配置诊断</h2></div><span id="managed-groups" class="pill">0 个群</span></div>
+          <div id="diagnostics-list" class="diagnostics-list"></div>
+        </article>
+      </section>
+
+      <section id="view-integrations" class="view orchestration-view">
+        <div class="orchestration-shell">
+          <header class="orchestration-toolbar">
+            <div class="toolbar-cluster">
+              <button id="orchestration-add" class="button secondary" type="button">＋ 新建资源</button>
+              <button id="orchestration-auto-layout" class="button ghost" type="button">自动布局</button>
+              <button id="orchestration-fit" class="button ghost" type="button">定位全部</button>
+            </div>
+            <label class="graph-search" aria-label="搜索编排节点"><span>⌕</span><input id="orchestration-search" placeholder="搜索 Bot、群或知识库" autocomplete="off"></label>
+            <div class="toolbar-cluster graph-legend" aria-label="图例">
+              <span><i class="legend-dot bot"></i>Bot</span>
+              <span><i class="legend-dot group"></i>群</span>
+              <span><i class="legend-dot knowledge"></i>知识库</span>
+            </div>
+            <div class="toolbar-cluster">
+              <span id="orchestration-state" class="save-state">配置已同步</span>
+              <button id="orchestration-save" class="button primary" type="button" disabled>保存编排</button>
+            </div>
+          </header>
+
+          <div class="orchestration-body">
+            <div id="orchestration-viewport" class="orchestration-viewport">
+              <div id="orchestration-canvas" class="orchestration-canvas" tabindex="0" aria-label="资源编排画布">
+                <div class="canvas-grid" aria-hidden="true"></div>
+                <svg id="orchestration-edges" class="orchestration-edges" aria-hidden="true">
+                  <defs><marker id="edge-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z"></path></marker></defs>
+                  <g id="orchestration-edge-layer"></g>
+                  <path id="orchestration-temp-edge" class="graph-edge temp" d=""></path>
+                </svg>
+                <div id="orchestration-node-layer" class="orchestration-node-layer"></div>
+                <div id="orchestration-empty" class="canvas-empty hidden">
+                  <span class="empty-glyph">⌘</span>
+                  <strong>从一张空白网络开始</strong>
+                  <small>右键画布创建 Bot、群或知识库，然后从节点右侧端口拖线连接。</small>
+                </div>
+              </div>
+            </div>
+
+            <aside id="orchestration-inspector" class="orchestration-inspector">
+              <div id="inspector-empty" class="inspector-empty">
+                <span>INSPECTOR</span>
+                <strong>选择一个节点</strong>
+                <p>点击 Bot 可以登录和配置；点击群可以查看消息、公告、分析记录与管理关系。</p>
+              </div>
+              <div id="inspector-content" class="hidden"></div>
+            </aside>
+          </div>
+
+          <footer class="orchestration-statusbar">
+            <span id="orchestration-counts">0 个节点 · 0 条连接</span>
+            <span>右键新建 · 拖动节点 · 从端口拖线连接 · Delete 删除</span>
+          </footer>
+        </div>
+
+        <div id="orchestration-menu" class="context-menu hidden" role="menu">
+          <div class="context-menu-label">新建</div>
+          <button type="button" data-create-kind="qq_bot"><span>Q</span><div><strong>QQ Bot</strong><small>OneBot / NapCat 账号</small></div></button>
+          <button type="button" data-create-kind="feishu_bot"><span>F</span><div><strong>飞书 Bot</strong><small>CLI 登录与文档操作</small></div></button>
+          <div class="context-menu-separator"></div>
+          <button type="button" data-create-kind="qq_group"><span>#</span><div><strong>QQ群</strong><small>消息、公告与治理范围</small></div></button>
+          <button type="button" data-create-kind="feishu_group"><span>群</span><div><strong>飞书群</strong><small>协作与通知目标</small></div></button>
+          <button type="button" data-create-kind="knowledge_base"><span>▤</span><div><strong>知识库</strong><small>飞书或外部知识资源</small></div></button>
+        </div>
+
+        <dialog id="qq-login-dialog" class="login-dialog">
+          <div class="login-dialog-layout">
+            <aside class="login-guide">
+              <div><p class="eyebrow">QQ QR Login</p><h2 id="qq-login-title">QQ 扫码登录</h2></div>
+              <ol>
+                <li>打开手机 QQ，点击右上角“+”。</li>
+                <li>选择“扫一扫”，扫描右侧二维码。</li>
+                <li>在手机上确认登录，页面会自动刷新状态。</li>
+              </ol>
+              <div id="qq-login-state" class="login-state">正在连接 NapCat…</div>
+              <p class="fine-print">二维码由对应 NapCat 实例生成，NeoQBot 不接触或保存 QQ 密码。</p>
+              <div class="button-row"><button id="qq-qrcode-refresh" class="button secondary" type="button">获取新二维码</button><button id="qq-token-copy" class="button secondary" type="button">复制 NapCat Token</button><button id="qq-login-new-window" class="button ghost" type="button">NapCat 设置</button><button id="qq-login-close" class="button ghost" type="button">关闭</button></div>
+            </aside>
+            <section id="qq-qr-stage" class="qr-stage">
+              <div class="qr-image-shell">
+                <img id="qq-qrcode" alt="QQ 登录二维码">
+                <div id="qq-qr-placeholder" class="qr-placeholder"><span class="qr-spinner"></span><strong>等待 NapCat 生成二维码</strong><small>通常在容器启动后的几秒内出现</small></div>
+              </div>
+              <p id="qq-qr-caption">二维码会自动刷新，请使用手机 QQ 扫描。</p>
+            </section>
+          </div>
+        </dialog>
+      </section>
+
+      <section id="view-settings" class="view">
+        <form id="settings-form" class="settings-layout">
+          <aside class="settings-progress" aria-label="设置进度">
+            <div class="progress-intro"><p class="eyebrow">Configuration</p><strong>分步完成设置</strong><small>每一步只处理一类信息，最后统一保存。</small></div>
+            <nav>
+              <button type="button" class="settings-step active" data-section="qq"><span>01</span><div><strong>QQ 账号</strong><small>连接与登录入口</small></div></button>
+              <button type="button" class="settings-step" data-section="tasks"><span>02</span><div><strong>QQ 事务</strong><small>记录、分析与公告</small></div></button>
+              <button type="button" class="settings-step" data-section="feishu"><span>03</span><div><strong>飞书账号</strong><small>归档与搜索</small></div></button>
+              <button type="button" class="settings-step" data-section="llm"><span>04</span><div><strong>大模型</strong><small>模型连接参数</small></div></button>
+              <button type="button" class="settings-step" data-section="policy"><span>05</span><div><strong>判断策略</strong><small>规则与政策文本</small></div></button>
+              <button type="button" class="settings-step" data-section="storage"><span>06</span><div><strong>存储保留</strong><small>本地记录与清理</small></div></button>
+              <button type="button" class="settings-step" data-section="system"><span>07</span><div><strong>系统安全</strong><small>环境与访问控制</small></div></button>
+              <button type="button" class="settings-step" data-section="review"><span>08</span><div><strong>检查应用</strong><small>确认并保存</small></div></button>
+            </nav>
+          </aside>
+          <div class="settings-workspace">
+            <section class="settings-section active" data-settings-section="qq">
+              <div class="section-title split-title"><div><p class="eyebrow">Step 01 · QQ accounts</p><h2>QQ 账号与连接</h2><p class="muted">这里只设置账号连接、Webhook 和托管范围；具体事务在下一步配置。</p></div><button id="add-qq-bot" class="button secondary" type="button">添加 QQ Bot</button></div>
+              <div id="qq-bot-editor" class="bot-editor-list"></div>
+            </section>
+            <section class="settings-section" data-settings-section="tasks">
+              <div class="section-title"><p class="eyebrow">Step 02 · QQ workflows</p><h2>QQ 事务分工</h2><p class="muted">每个账号分别选择只记录、分析、处理或公告同步。依赖项会自动补齐。</p></div>
+              <div id="qq-task-editor" class="bot-editor-list"></div>
+            </section>
+            <section class="settings-section" data-settings-section="feishu">
+              <div class="section-title split-title"><div><p class="eyebrow">Step 03 · Feishu accounts</p><h2>飞书账号</h2><p class="muted">为公告归档和管理员搜索准备独立 CLI 登录态。</p></div><button id="add-feishu-bot" class="button secondary" type="button">添加飞书 Bot</button></div>
+              <div id="feishu-bot-editor" class="bot-editor-list"></div>
+            </section>
+            <section class="settings-section" data-settings-section="llm">
+              <div class="section-title"><p class="eyebrow">Step 04 · Agnes AI</p><h2>大模型连接</h2><p class="muted">只负责结构化判断；纯记录模式无需配置模型。</p></div>
+              <div class="form-grid">
+                <label>驱动<select id="cfg-llm-driver"><option value="rules">离线规则</option><option value="openai_compatible">OpenAI 兼容</option></select></label>
+                <label>模型名称<input id="cfg-llm-model"></label>
+                <label class="span-2">Base URL<input id="cfg-llm-url" placeholder="https://.../v1"></label>
+                <label class="span-2">API Key<input id="cfg-llm-key" type="password" placeholder="留空保持原值"></label>
+                <label>超时（秒）<input id="cfg-llm-timeout" type="number" min="1"></label>
+                <label>重试次数<input id="cfg-llm-retries" type="number" min="0"></label>
+                <label class="switch-field span-2"><span><strong>发送 response_format</strong><small>端点不兼容时关闭</small></span><input id="cfg-llm-json" type="checkbox"></label>
+              </div>
+            </section>
+            <section class="settings-section" data-settings-section="policy">
+              <div class="section-title"><p class="eyebrow">Step 05 · Shared policy</p><h2>共享判断策略</h2><p class="muted">这里维护所有 Bot 共用的判断文本与离线规则。</p></div>
+              <div class="form-grid">
+                <label class="span-2">入群必要关键词<textarea id="cfg-required-keywords" rows="2"></textarea></label>
+                <label class="span-2">入群禁止关键词<textarea id="cfg-forbidden-keywords" rows="2"></textarea></label>
+                <label class="span-2">入群审核政策<textarea id="cfg-join-policy" rows="5"></textarea></label>
+                <label class="span-2">群聊风控政策<textarea id="cfg-mod-policy" rows="6"></textarea></label>
+                <label class="span-2">离线关键词规则（JSON）<textarea id="cfg-rule-keywords" class="code-input" rows="8"></textarea></label>
+              </div>
+            </section>
+            <section class="settings-section" data-settings-section="storage">
+              <div class="section-title"><p class="eyebrow">Step 06 · Storage</p><h2>本地记录与数据保留</h2><p class="muted">SQLite 用于管理后台查询；开启“纯记录”后，原始消息还会按日写入挂载卷中的 JSONL。</p></div>
+              <div class="form-grid">
+                <label class="span-2">群消息归档目录<input id="cfg-message-archive-path" placeholder="data/group-message-records"><small>Docker 默认映射到 /app/data/group-message-records</small></label>
+                <label class="switch-field span-2"><span><strong>启用每日清理</strong><small>公告版本不会自动删除</small></span><input id="cfg-retention-enabled" type="checkbox"></label>
+                <label>群消息（天）<input id="cfg-message-days" type="number"></label>
+                <label>入群申请（天）<input id="cfg-join-days" type="number"></label>
+                <label>分析报告（天）<input id="cfg-mod-days" type="number"></label>
+                <label>审计日志（天）<input id="cfg-audit-days" type="number"></label>
+              </div>
+            </section>
+            <section class="settings-section" data-settings-section="system">
+              <div class="section-title"><p class="eyebrow">Step 07 · System</p><h2>系统与安全</h2></div>
+              <div class="form-grid">
+                <label>环境名称<input id="cfg-environment"></label>
+                <label>日志级别<select id="cfg-log-level"><option>DEBUG</option><option>INFO</option><option>WARNING</option><option>ERROR</option></select></label>
+                <label class="switch-field"><span><strong>安全演练</strong><small>禁止真实 QQ 出站动作</small></span><input id="cfg-dry-run" type="checkbox"></label>
+                <label class="switch-field"><span><strong>Secure Cookie</strong><small>HTTPS 后开启</small></span><input id="cfg-secure-cookie" type="checkbox"></label>
+                <label class="span-2">管理 API Token<input id="cfg-admin-token" type="password" placeholder="留空保持原值"></label>
+              </div>
+            </section>
+            <section class="settings-section" data-settings-section="review">
+              <div class="section-title"><p class="eyebrow">Step 08 · Review</p><h2>检查并应用</h2><p class="muted">保存后配置会立即校验并热加载；监听地址或端口变更仍需重启。</p></div>
+              <div id="settings-review" class="review-grid"></div>
+              <div class="review-notice"><strong>应用前检查</strong><span>建议首次联调保持“安全演练”开启，并确认 QQ 登录状态与挂载卷权限。</span></div>
+            </section>
+            <div class="settings-actions"><span id="settings-state" class="muted">修改尚未保存。</span><div class="button-row"><button id="settings-prev" type="button" class="button ghost">上一步</button><button id="settings-next" type="button" class="button secondary">下一步</button><button type="submit" class="button primary">保存并应用</button></div></div>
+          </div>
+        </form>
+      </section>
+
+      <section id="view-records" class="view">
+        <article class="panel">
+          <div class="panel-heading records-heading"><div><p class="eyebrow">Audit trail</p><h2>记录与审计</h2></div><button id="records-refresh" class="button secondary" type="button">刷新</button></div>
+          <div class="record-filter-bar">
+            <label>记录类型<select id="record-kind"><option value="joins">入群申请</option><option value="messages">群聊消息</option><option value="moderation">消息分析</option><option value="announcements">公告库</option><option value="audit">审计日志</option></select></label>
+            <label>Bot<select id="record-bot"><option value="">全部 Bot</option></select></label>
+            <label>群号<input id="record-group" placeholder="全部群"></label>
+            <label class="record-search">关键词<input id="record-query" type="search" placeholder="内容、用户、状态或 ID"></label>
+            <label>每页<select id="record-limit"><option value="25">25</option><option value="50" selected>50</option><option value="100">100</option></select></label>
+            <button id="records-reset" class="button ghost" type="button">清除筛选</button>
+          </div>
+          <div id="records-table" class="records-table"></div>
+          <footer class="records-pagination"><span id="records-range">0 条记录</span><div class="button-row"><button id="records-prev" class="button ghost" type="button" disabled>上一页</button><span id="records-page">第 1 页</span><button id="records-next" class="button ghost" type="button" disabled>下一页</button></div></footer>
+        </article>
+      </section>
+    </div>
+  </div>
+
+  <dialog id="command-dialog" class="command-dialog">
+    <header><span class="command-icon">⌕</span><input id="command-query" placeholder="输入命令或搜索功能" autocomplete="off"><button id="command-close" type="button" aria-label="关闭命令面板">×</button></header>
+    <div id="command-results" class="command-results"></div>
+    <footer><span><kbd>↑</kbd><kbd>↓</kbd> 选择</span><span><kbd>Enter</kbd> 执行</span><span><kbd>Esc</kbd> 关闭</span></footer>
+  </dialog>
+
+  <script src="/gui/assets/app.js?v=0.4.0" defer></script>
+</body>
+</html>

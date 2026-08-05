@@ -1,0 +1,11 @@
+name: astrbot_plugin_neoqbot_control
+display_name: NeoQBot Control
+desc: 从 AstrBot 安全地查询 NeoQBot 状态并触发管理员任务。
+short_desc: NeoQBot 管理控制面。
+author: NeoQBot contributors
+version: 0.4.0
+repo: https://github.com/LYOfficial/NeoQBot
+astrbot_version: ">=4.16,<5"
+support_platforms:
+  - aiocqhttp
+  - lark

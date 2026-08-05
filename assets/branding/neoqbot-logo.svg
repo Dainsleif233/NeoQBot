@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">NeoQBot logo</title>
+  <desc id="desc">Geometric NQ monogram with three connected orchestration nodes.</desc>
+  <rect x="24" y="24" width="464" height="464" rx="112" fill="#050505"/>
+  <g fill="none" stroke="#ffffff" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M112 322V150L230 322V150" stroke-width="38"/>
+    <circle cx="350" cy="230" r="82" stroke-width="36"/>
+    <path d="M365 276L426 345" stroke-width="34"/>
+    <path d="M112 398H400" stroke-width="12"/>
+  </g>
+  <g fill="#ffffff">
+    <circle cx="112" cy="398" r="22"/>
+    <circle cx="256" cy="398" r="22"/>
+    <circle cx="400" cy="398" r="22"/>
+  </g>
+</svg>

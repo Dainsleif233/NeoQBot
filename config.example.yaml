@@ -4,69 +4,63 @@ app:
   port: 8080
   timezone: Asia/Shanghai
   log_level: INFO
-  database_path: data/mua-bot.db
+  database_path: data/neoqbot.db
   # 纯记录群消息按 Bot/群号/日期写入 JSONL；Docker 中位于持久化数据卷。
   message_archive_path: data/group-message-records
-  # 生产环境请通过 MUA_APP__ADMIN_API_TOKEN 注入随机长令牌。
+  # 生产环境请通过 NEOQBOT_APP__ADMIN_API_TOKEN 注入随机长令牌。
   admin_api_token: ""
   # 首次联调务必保持 true；确认收发链路后再关闭。
   dry_run: true
 
 qq:
-  enabled: true
-  # Compose 内使用服务名；Windows 本地直连外部 NapCat 时可改为 http://127.0.0.1:3000。
-  onebot_base_url: http://qq-bridge:3000
-  # Compose 自动生成随机 Token 并写入持久卷；文件存在时优先于下面的明文值。
-  access_token: ""
-  access_token_file: /app/data/secrets/napcat-onebot.token
-  webhook_secret: ""
-  request_timeout_seconds: 15
-  webui_base_url: http://qq-bridge:6099
-  webui_token: ""
-  webui_token_file: /app/data/secrets/napcat-webui.token
-  # 留空时 GUI 自动使用当前浏览器主机名和 webui_public_port。
-  webui_public_url: ""
-  webui_public_port: 6099
-  # NapCat 二维码缓存的只读挂载路径；GUI 通过受保护接口直接显示该图片。
-  qrcode_path: /app/napcat-cache/qrcode.png
-  managed_group_ids:
-    - "123456789"
-  administrator_qq_ids:
-    - "10001"
-  # 不同 OneBot 实现的扩展动作名可能不同，按顺序尝试。
-  announcement_actions:
-    - get_group_notice
-    - _get_group_notice
-  # 多账号请在 GUI 中添加，或按下面的结构配置；bots 非空时优先于上面的单账号字段。
-  # 每个 NapCat 实例把反向 HTTP 地址设为 /webhooks/onebot/<bot-id>。
-  bots: []
-  # bots:
-  #   - id: join-worker
-  #     name: 入群管理 Bot
-  #     enabled: true
-  #     onebot_base_url: http://qq-join-bridge:3000
-  #     access_token: ""
-  #     access_token_file: /app/data/secrets/qq-join-onebot.token
-  #     webhook_secret: ""
-  #     webui_token_file: /app/data/secrets/qq-join-webui.token
-  #     webui_public_port: 6100
-  #     qrcode_path: /app/napcat-cache/qq-join/qrcode.png
-  #     managed_group_ids: ["123456789"]
-  #     administrator_qq_ids: ["10001"]
-  #     announcement_actions: [get_group_notice, _get_group_notice]
-  #     tasks:
-  #       join_management:
-  #         enabled: true
-  #         detect_requests: true
-  #         execute_management: true
-  #         auto_approve: false
-  #         auto_reject: false
-  #         minimum_confidence: 0.88
-  #       message_detection:
-  #         enabled: false
-  #         record_only: false
-  #       announcement_sync:
-  #         enabled: false
+  # 每个账号是独立 Bot 节点；NapCat 反向 HTTP 地址为 /webhooks/onebot/<bot-id>。
+  bots:
+    - id: default
+      name: 默认 QQ Bot
+      enabled: true
+      # Compose 内使用服务名；Windows 本地直连外部 NapCat 时可改为 http://127.0.0.1:3000。
+      onebot_base_url: http://qq-bridge:3000
+      # Compose 自动生成随机 Token 并写入持久卷；文件存在时优先于明文值。
+      access_token: ""
+      access_token_file: /app/data/secrets/napcat-onebot.token
+      webhook_secret: ""
+      request_timeout_seconds: 15
+      webui_base_url: http://qq-bridge:6099
+      webui_token: ""
+      webui_token_file: /app/data/secrets/napcat-webui.token
+      webui_public_url: ""
+      webui_public_port: 6099
+      qrcode_path: /app/napcat-cache/qrcode.png
+      # managed_group_ids 由下方编排图中的 manages/observes 连接生成。
+      managed_group_ids: []
+      administrator_qq_ids: ["10001"]
+      announcement_actions: [get_group_notice, _get_group_notice]
+      search_feishu_bot_id: ""
+      tasks:
+        join_management:
+          enabled: true
+          detect_requests: true
+          execute_management: true
+          auto_approve: false
+          auto_reject: false
+          minimum_confidence: 0.88
+        message_detection:
+          enabled: true
+          record_only: false
+          realtime_detection: true
+          polling_detection: true
+          analyze: true
+          handle: true
+          interval_minutes: 30
+          window_minutes: 5
+          risk_threshold: 0.7
+          max_messages_per_run: 300
+        announcement_sync:
+          enabled: false
+          auto_sync: false
+          sync_interval_minutes: 30
+          sync_on_startup: false
+          feishu_bot_id: ""
 
 llm:
   # rules 可离线联调；生产建议切到 openai_compatible 并配置 Agnes AI。
@@ -119,52 +113,38 @@ announcements:
   sync_on_startup: true
 
 feishu:
-  enabled: false
-  driver: disabled
-  # 填写当前飞书 CLI 的实际可执行文件。CLI 版本接口变化由下面的 argv 模板隔离。
-  executable: feishu
-  timeout_seconds: 60
-  search_prefixes:
-    - "搜索 "
-    - "查询 "
-    - "/search "
-  max_search_results: 5
-  # 模板只填写 executable 后面的参数；每项是独立 argv，不经过 shell。
-  # archive_announcement 必须接受公告字段或 {payload_json}；search 必须输出 JSON，
-  # 格式为 [{title,snippet,url}] 或 {items:[...]}。按安装版本的 `feishu --help` 修改。
-  command_templates: {}
-  # 示例（不是对所有 CLI 版本都适用）：
-  # command_templates:
-  #   archive_announcement:
-  #     - bitable
-  #     - record
-  #     - create
-  #     - --json
-  #     - "{payload_json}"
-  #   search:
-  #     - search
-  #     - --query
-  #     - "{query}"
-  #     - --limit
-  #     - "{limit}"
-  #     - --output
-  #     - json
-  #   login: ["auth", "login", "--output", "json"]
-  #   logout: ["auth", "logout", "--output", "json"]
-  #   doctor: ["auth", "status", "--output", "json"]
-  # 公告可能超过系统命令行长度。包装器支持从 stdin 读取 JSON 时，设为 true，并在模板中
-  # 使用类似 `--json -` 的参数；此时不必引用 {payload_json}。
-  archive_payload_stdin: false
-  extra_environment: {}
-  # 多飞书账号可分别设置 HOME/配置目录等环境变量来隔离 CLI 登录态。
-  # bots 非空时优先于上面的单账号字段。
-  bots: []
+  bots:
+    - id: default
+      name: 默认飞书 Bot
+      enabled: false
+      driver: disabled
+      # 填写当前飞书 CLI 的实际可执行文件。
+      executable: feishu
+      timeout_seconds: 60
+      search_prefixes: ["搜索 ", "查询 ", "/search "]
+      max_search_results: 5
+      # 模板只填写 executable 后面的参数；每项是独立 argv，不经过 shell。
+      command_templates: {}
+      archive_payload_stdin: false
+      # 多飞书账号可分别设置 HOME/配置目录等变量来隔离 CLI 登录态。
+      extra_environment: {}
 
 orchestration:
-  # GUI 会把旧 managed_group_ids 自动迁移成群节点和 manages 连接。
   # 资源支持 qq_group、feishu_group、knowledge_base；画布坐标保存在 layout。
-  resources: []
-  edges: []
+  resources:
+    - id: qq-group-main
+      kind: qq_group
+      name: 主群
+      external_id: "123456789"
+      description: ""
+      enabled: true
+      metadata: {}
+  edges:
+    - id: default-manages-main
+      source: qq-bot:default
+      target: qq-group-main
+      relation: manages
+      enabled: true
   layout: {}
 
 runtime:
@@ -181,7 +161,7 @@ retention:
 gui:
   enabled: true
   bootstrap_username: admin
-  bootstrap_password: muaadmin
+  bootstrap_password: neoqbotadmin
   session_hours: 12
   # 直接 HTTP 访问时保持 false；经 HTTPS 反向代理后改为 true。
   secure_cookie: false
