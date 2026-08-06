@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
 import os
 import secrets
@@ -49,6 +50,93 @@ def _load_json(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError):
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def _is_onebot_webhook_url(url: str, expected_path: str = "/webhooks/onebot") -> bool:
+    """Return whether a URL targets the standard NeoQBot OneBot webhook family."""
+    try:
+        path = urlsplit(url).path.rstrip("/")
+    except ValueError:
+        return False
+    expected = expected_path.rstrip("/")
+    return path == expected or path.startswith(f"{expected}/")
+
+
+def napcat_event_client_diagnostics(
+    config_dir: str | Path,
+    expected_token: str,
+    webhook_url: str = "http://neoqbot:8080/webhooks/onebot",
+) -> dict[str, object]:
+    """Safely report whether persisted NapCat event clients match NeoQBot.
+
+    The returned data deliberately contains only file names, URL paths and
+    booleans.  It never returns a OneBot token, including a hash or prefix.
+    """
+    config_path = Path(config_dir)
+    expected_path = urlsplit(webhook_url).path.rstrip("/")
+    files = sorted(config_path.glob("onebot11*.json"))
+    entries: list[dict[str, object]] = []
+    errors: list[str] = []
+
+    if not files:
+        return {
+            "ok": False,
+            "config_files": [],
+            "clients": [],
+            "errors": ["No onebot11 configuration files were found"],
+        }
+
+    for path in files:
+        network = _load_json(path).get("network")
+        raw_clients = network.get("httpClients", []) if isinstance(network, dict) else []
+        matches = [
+            item
+            for item in raw_clients
+            if isinstance(item, dict)
+            and (
+                item.get("name") == "neoqbot-events"
+                or _is_onebot_webhook_url(str(item.get("url") or ""))
+            )
+        ]
+        if len(matches) != 1:
+            errors.append(
+                f"{path.name}: expected exactly one NeoQBot HTTP client, found {len(matches)}"
+            )
+        for item in matches:
+            url = str(item.get("url") or "")
+            try:
+                url_path = urlsplit(url).path.rstrip("/")
+            except ValueError:
+                url_path = ""
+            token = str(item.get("token") or "")
+            entries.append(
+                {
+                    "file": path.name,
+                    "name": str(item.get("name") or ""),
+                    "enabled": bool(item.get("enable")),
+                    "url_path": url_path,
+                    "url_matches_expected": url_path == expected_path,
+                    "token_configured": bool(token),
+                    "token_matches_expected": bool(expected_token)
+                    and hmac.compare_digest(token, expected_token),
+                }
+            )
+
+    ok = (
+        bool(expected_token)
+        and bool(entries)
+        and not errors
+        and all(
+            item["enabled"] and item["url_matches_expected"] and item["token_matches_expected"]
+            for item in entries
+        )
+    )
+    return {
+        "ok": ok,
+        "config_files": [path.name for path in files],
+        "clients": entries,
+        "errors": errors,
+    }
 
 
 def _ensure_secret(path: Path) -> str:
@@ -105,7 +193,7 @@ def initialize_napcat(
     webhook_url: str = "http://neoqbot:8080/webhooks/onebot",
     http_port: int = 3000,
     webui_port: int = 6099,
-) -> dict[str, str]:
+) -> dict[str, object]:
     """Create persistent secrets and enforce the NapCat endpoints NeoQBot requires."""
     webhook_url = webhook_url.rstrip("/")
     config_path = Path(config_dir)
@@ -149,11 +237,7 @@ def initialize_napcat(
         url = str(item.get("url") or "")
         if url.rstrip("/") == webhook_url:
             return True
-        try:
-            path = urlsplit(url).path.rstrip("/")
-        except ValueError:
-            return False
-        return path == "/webhooks/onebot" or path.startswith("/webhooks/onebot/")
+        return _is_onebot_webhook_url(url)
 
     def configure_onebot(path: Path) -> None:
         onebot_config = _load_json(path)
@@ -203,6 +287,12 @@ def initialize_napcat(
     for candidate in sorted(account_configs):
         configure_onebot(candidate)
 
+    event_client_diagnostics = napcat_event_client_diagnostics(
+        config_path, onebot_token, webhook_url
+    )
+    if not event_client_diagnostics["ok"]:
+        raise RuntimeError("NapCat OneBot event client initialization verification failed")
+
     return {
         "onebot_config": str(onebot_config_path),
         "webui_config": str(webui_config_path),
@@ -210,6 +300,7 @@ def initialize_napcat(
         "webui_token_file": str(webui_token_path),
         "admin_api_token_file": secret_files["admin_api_token_file"],
         "gui_bootstrap_password_file": secret_files["gui_bootstrap_password_file"],
+        "event_client_diagnostics": event_client_diagnostics,
     }
 
 

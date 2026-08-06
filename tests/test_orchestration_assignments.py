@@ -26,7 +26,7 @@ from neoqbot.gui import (
     _validate_bot_identity_changes,
 )
 from neoqbot.models import GroupMessage, ModerationResult
-from neoqbot.napcat import initialize_napcat
+from neoqbot.napcat import initialize_napcat, napcat_event_client_diagnostics
 from neoqbot.runtime import Runtime
 from neoqbot.services import ModerationService
 
@@ -139,6 +139,35 @@ class SettingsAssignmentTests(unittest.TestCase):
             secondary.qrcode_path,
             "data/napcat-cache/mualliance2/qrcode.png",
         )
+
+    def test_stale_external_sidecar_configuration_recovers_bundled_mode(self) -> None:
+        settings = Settings.model_validate(
+            {
+                "qq": {
+                    "bots": [
+                        {
+                            "id": "mualliance1",
+                            "name": "Primary",
+                            "enabled": True,
+                            "connection_mode": "external",
+                            "onebot_base_url": "http://qq-bridge:3000",
+                            "access_token_file": "data/secrets/napcat-onebot.token",
+                            "webhook_secret": "legacy-hmac-secret",
+                            "webui_base_url": "http://qq-bridge:6099",
+                            "webui_token_file": "data/secrets/napcat-webui.token",
+                        }
+                    ]
+                }
+            }
+        )
+
+        bot = settings.qq_bot("mualliance1")
+
+        self.assertIsNotNone(bot)
+        assert bot is not None
+        self.assertEqual(bot.connection_mode, "bundled_napcat")
+        self.assertEqual(bot.webhook_secret, "")
+        self.assertEqual(bot.access_token_file, "data/secrets/napcat-onebot.token")
 
     def test_only_one_bot_can_use_the_bundled_napcat_sidecar(self) -> None:
         with self.assertRaisesRegex(ValidationError, "只能绑定一个 QQ Bot"):
@@ -590,6 +619,17 @@ class NapCatInitializationTests(unittest.TestCase):
             )
             onebot = json.loads(Path(result["onebot_config"]).read_text(encoding="utf-8"))
             account_onebot = json.loads(account_config_path.read_text(encoding="utf-8"))
+            expected_token = Path(result["onebot_token_file"]).read_text(encoding="utf-8").strip()
+            diagnostics = napcat_event_client_diagnostics(napcat_config, expected_token)
+            mismatched_account = json.loads(json.dumps(account_onebot))
+            account_event_client = next(
+                item
+                for item in mismatched_account["network"]["httpClients"]
+                if item["name"] == "neoqbot-events"
+            )
+            account_event_client["token"] = "mismatched-token"
+            account_config_path.write_text(json.dumps(mismatched_account), encoding="utf-8")
+            mismatch = napcat_event_client_diagnostics(napcat_config, expected_token)
 
         for configured in (onebot, account_onebot):
             event_client = next(
@@ -605,6 +645,7 @@ class NapCatInitializationTests(unittest.TestCase):
                 ),
                 1,
             )
+            self.assertEqual(event_client["token"], expected_token)
             self.assertFalse(
                 any(
                     item.get("url") == "http://neoqbot:8080/webhooks/onebot/default"
@@ -614,6 +655,10 @@ class NapCatInitializationTests(unittest.TestCase):
         self.assertTrue(
             any(item.get("name") == "another-service" for item in onebot["network"]["httpClients"])
         )
+        self.assertTrue(diagnostics["ok"])
+        self.assertNotIn(expected_token, json.dumps(diagnostics))
+        self.assertFalse(mismatch["ok"])
+        self.assertTrue(any(not item["token_matches_expected"] for item in mismatch["clients"]))
 
 
 class WebhookIsolationTests(unittest.TestCase):
@@ -682,6 +727,62 @@ class WebhookIsolationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["bot_id"], "mualliance1")
         submit.assert_awaited_once()
+
+    def test_bearer_token_works_when_a_legacy_hmac_secret_is_also_configured(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            config = assignment_settings().model_dump(mode="json")
+            config["app"]["database_path"] = str(Path(directory) / "webhook.db")
+            config["app"]["message_archive_path"] = str(Path(directory) / "messages")
+            config["qq"]["bots"][0].update(
+                {
+                    "access_token": "test-onebot-token",
+                    "access_token_file": "",
+                    "webhook_secret": "legacy-hmac-secret",
+                }
+            )
+            settings = Settings.model_validate(config)
+            app = create_app(settings)
+            submit = AsyncMock()
+            app.state.container.runtime.submit = submit
+
+            with TestClient(app) as client:
+                accepted = client.post(
+                    "/webhooks/onebot/worker",
+                    headers={"Authorization": "Bearer test-onebot-token"},
+                    json={
+                        "post_type": "message",
+                        "message_type": "group",
+                        "group_id": 100,
+                        "message_id": 1,
+                        "user_id": 2,
+                        "message": "accepted via bearer",
+                    },
+                )
+                rejected = client.post(
+                    "/webhooks/onebot/worker",
+                    headers={"Authorization": "Bearer wrong-token"},
+                    json={
+                        "post_type": "message",
+                        "message_type": "group",
+                        "group_id": 100,
+                        "message_id": 2,
+                        "user_id": 2,
+                        "message": "must not be accepted",
+                    },
+                )
+                audit_records = app.state.container.database.recent_records(
+                    "audit", search="onebot_webhook_auth", limit=10
+                )
+
+        self.assertEqual(accepted.status_code, 200)
+        self.assertEqual(rejected.status_code, 401)
+        submit.assert_awaited_once()
+        self.assertEqual(len(audit_records), 1)
+        audit_details = audit_records[0]["details_json"]
+        self.assertTrue(audit_details["webhook_secret_configured"])
+        self.assertTrue(audit_details["access_token_configured"])
+        self.assertNotIn("wrong-token", json.dumps(audit_details))
+        self.assertNotIn("test-onebot-token", json.dumps(audit_details))
 
     def test_legacy_default_webhook_alias_reaches_the_real_message_recorder(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:

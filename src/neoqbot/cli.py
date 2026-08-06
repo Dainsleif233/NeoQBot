@@ -11,10 +11,14 @@ from typing import Any
 import uvicorn
 
 from .app import create_app
-from .config import Settings
+from .config import Settings, resolve_secret
 from .container import build_container
 from .database import Database
-from .napcat import initialize_napcat, initialize_secrets
+from .napcat import (
+    initialize_napcat,
+    initialize_secrets,
+    napcat_event_client_diagnostics,
+)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -79,6 +83,15 @@ async def _run_once(settings: Settings, command: str) -> dict[str, Any]:
                     result["qq"][bot_id] = await client.doctor()
                 except Exception as exc:
                     result["qq"][bot_id] = {"ok": False, "error": str(exc)}
+            bundled = settings.bundled_qq_bot()
+            napcat_config_dir = os.getenv("NEOQBOT_NAPCAT_CONFIG_DIR", "").strip()
+            if bundled is not None and napcat_config_dir:
+                result["qq"].setdefault(bundled.id, {})["event_client_configuration"] = (
+                    napcat_event_client_diagnostics(
+                        napcat_config_dir,
+                        resolve_secret(bundled.access_token, bundled.access_token_file),
+                    )
+                )
             result["feishu"] = {}
             for bot_id, client in container.feishu_clients.items():
                 try:

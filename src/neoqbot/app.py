@@ -44,12 +44,42 @@ def _verify_onebot_auth(
     webhook_secret: str,
     access_token: str,
 ) -> bool:
-    if webhook_secret:
-        return _verify_onebot_signature(body, signature, webhook_secret)
-    if access_token:
-        scheme, supplied = get_authorization_scheme_param(authorization or "")
-        return scheme.lower() == "bearer" and hmac.compare_digest(supplied, access_token)
-    return False
+    """Accept each credential explicitly configured for the OneBot endpoint.
+
+    Some old deployments retained an HMAC secret while their bundled NapCat
+    client was already configured with a Bearer token.  Treating HMAC as an
+    exclusive mode made that valid client fail permanently.  Both credentials
+    remain mandatory secrets; accepting either is a compatibility bridge, not
+    anonymous access.
+    """
+    signature_valid = bool(webhook_secret) and _verify_onebot_signature(
+        body, signature, webhook_secret
+    )
+    scheme, supplied = get_authorization_scheme_param(authorization or "")
+    token_valid = (
+        bool(access_token)
+        and scheme.lower() == "bearer"
+        and hmac.compare_digest(supplied, access_token)
+    )
+    return signature_valid or token_valid
+
+
+def _onebot_auth_diagnostics(
+    authorization: str | None,
+    signature: str | None,
+    webhook_secret: str,
+    access_token: str,
+) -> dict[str, object]:
+    """Describe a rejected request without ever retaining or logging its secret."""
+    scheme, supplied = get_authorization_scheme_param(authorization or "")
+    return {
+        "authorization_present": bool(authorization),
+        "authorization_scheme": scheme.lower() or "none",
+        "authorization_credential_present": bool(supplied),
+        "signature_present": bool(signature),
+        "webhook_secret_configured": bool(webhook_secret),
+        "access_token_configured": bool(access_token),
+    }
 
 
 def create_app(settings: Settings | None = None, config_path: str | Path | None = None) -> FastAPI:
@@ -121,6 +151,7 @@ def create_app(settings: Settings | None = None, config_path: str | Path | None 
     app.state.container = container
     admin_failures = FailureLimiter()
     webhook_failures = FailureLimiter()
+    webhook_auth_diagnostics = FailureLimiter()
     legacy_webhook_aliases_logged: set[str] = set()
 
     @app.middleware("http")
@@ -239,12 +270,40 @@ def create_app(settings: Settings | None = None, config_path: str | Path | None 
             body, x_signature, authorization, bot.webhook_secret, access_token
         ):
             webhook_failures.hit(failure_key, 300)
+            diagnostic_key = f"webhook-auth-diagnostic:{bot.id}:{address}"
+            if not webhook_auth_diagnostics.blocked(diagnostic_key, 1, 300):
+                webhook_auth_diagnostics.hit(diagnostic_key, 300)
+                diagnostic = {
+                    **_onebot_auth_diagnostics(
+                        authorization,
+                        x_signature,
+                        bot.webhook_secret,
+                        access_token,
+                    ),
+                    "connection_mode": bot.connection_mode,
+                    "access_token_file": bot.access_token_file,
+                }
+                logger.warning(
+                    "Rejected OneBot webhook authentication for bot %s from %s: %s. "
+                    "For bundled NapCat, refresh init-volumes and restart qq-bridge.",
+                    bot.id,
+                    address,
+                    diagnostic,
+                )
+                container.database.audit(
+                    "onebot_webhook_auth",
+                    "rejected",
+                    "qq_bot",
+                    bot.id,
+                    diagnostic,
+                )
             raise HTTPException(
                 status_code=401,
                 detail="Invalid OneBot webhook authentication",
                 headers={"WWW-Authenticate": "Bearer"},
             )
         webhook_failures.clear(failure_key)
+        webhook_auth_diagnostics.clear(f"webhook-auth-diagnostic:{bot.id}:{address}")
         try:
             event = json.loads(body)
         except json.JSONDecodeError as exc:

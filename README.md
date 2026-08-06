@@ -122,6 +122,21 @@ docker compose logs -f neoqbot
 docker compose exec neoqbot sh -c 'cat /app/data/secrets/gui-bootstrap-password'
 ```
 
+升级后如果 NapCat 曾出现 OneBot HTTP 上报 401/404，请用以下命令完整刷新初始化配置并重启
+`qq-bridge`。`--force-recreate` 不会删除命名卷中的 QQ 登录态、SQLite 或归档数据；它只会让
+NapCat 重新读取同一份持久化 OneBot URL 与 Token。
+
+```bash
+docker compose up -d --build --force-recreate init-volumes neoqbot qq-bridge
+docker compose logs --tail=100 neoqbot qq-bridge
+docker compose exec neoqbot neoqbot --config /app/data/config.yaml doctor
+```
+
+不要复制或粘贴 Token 到日志、Issue 或聊天窗口。新版会在平台审计中仅记录鉴权方式是否存在，便于
+判断是旧客户端未重启、Bearer Header 缺失，还是配置残留，而不会记录凭据明文。
+在 Compose 部署中，`doctor` 的对应 QQ Bot 会提供 `event_client_configuration`：其中 `ok: true`
+表示持久化的 NapCat HTTP Client URL、启用状态和 Token 已与 NeoQBot 的共享 Secret 一致。
+
 最后一条命令输出随机初始密码。Compose 默认将管理端发布到 `0.0.0.0:6688`，可通过服务器 IP
 访问。公网裸 HTTP 会明文传输登录凭据，必须先限制防火墙来源并尽快接入 HTTPS；不需要公网访问时，
 在 `.env` 设置 `NEOQBOT_GUI_BIND_IP=127.0.0.1`。Compose 同时准备持久化数据、NapCat 配置、QQ

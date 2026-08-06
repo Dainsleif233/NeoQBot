@@ -40,6 +40,21 @@ NapCat 进程不能同时代表两个真实 QQ 账号。
 客户端，只保留一个 `/webhooks/onebot` 上报客户端。若 NapCat 日志出现 HTTP 404，应先重新构建
 NeoQBot，并重新运行 `init-volumes` 以刷新持久化配置。
 
+NapCat 会在进程启动时读取 HTTP Client 的 URL 和 Token，配置文件写入后不会热重载。Compose 已将
+`init-volumes` 的刷新关联到 `neoqbot` 与 `qq-bridge` 的重启；升级时仍建议显式执行：
+
+```bash
+docker compose up -d --build --force-recreate init-volumes neoqbot qq-bridge
+```
+
+这会保留命名卷中的 QQ 登录态和业务数据，只重建容器并让两端重新读取同一份 OneBot 凭据。若日志仍有
+401，平台会写入不含 Token 明文的 `onebot_webhook_auth` 审计项，显示是否收到 Bearer Header、是否残留
+HMAC Secret，以及当前 Bot 的连接方式；不要在排查过程中输出凭据。
+
+在 Compose 容器中运行 `neoqbot --config /app/data/config.yaml doctor` 会为内置 Bot 给出
+`event_client_configuration`。该检查只返回 URL 路径、启用状态和一致性布尔值，`ok: true` 代表持久化
+配置中的 HTTP Client 已与共享 OneBot Secret 对齐，绝不会返回 Token 或其指纹。
+
 ## 连接语义
 
 | 连接 | 建议使用场景 | 对当前 Runtime 的影响 |

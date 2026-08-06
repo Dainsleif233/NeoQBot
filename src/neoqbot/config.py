@@ -438,7 +438,6 @@ def _looks_like_legacy_bundled_bot(raw_bot: dict[str, object], bot_id: str) -> b
         and str(raw_bot.get("webui_token_file") or "").replace("\\", "/") in webui_files
         and not str(raw_bot.get("access_token") or "").strip()
         and not str(raw_bot.get("webui_token") or "").strip()
-        and not str(raw_bot.get("webhook_secret") or "").strip()
     )
 
 
@@ -473,9 +472,25 @@ class Settings(BaseSettings):
         if not isinstance(qq, dict) or not isinstance(qq.get("bots"), list):
             return data
         for index, raw_bot in enumerate(qq["bots"]):
-            if not isinstance(raw_bot, dict) or "connection_mode" in raw_bot:
+            if not isinstance(raw_bot, dict):
                 continue
             bot_id = str(raw_bot.get("id") or "default")
+            # A previous migration could persist the Compose sidecar as an external
+            # bot when a legacy webhook_secret was still present.  The exact
+            # qq-bridge endpoints and shared secret files identify it unambiguously;
+            # restore bundled mode so its stale HMAC value cannot shadow NapCat's
+            # Bearer event credential.
+            if (
+                index == 0
+                and raw_bot.get("connection_mode") == "external"
+                and str(raw_bot.get("onebot_base_url") or "").rstrip("/")
+                == BUNDLED_NAPCAT_ONEBOT_URL
+                and str(raw_bot.get("webui_base_url") or "").rstrip("/") == BUNDLED_NAPCAT_WEBUI_URL
+                and _looks_like_legacy_bundled_bot(raw_bot, bot_id)
+            ):
+                raw_bot["connection_mode"] = "bundled_napcat"
+            if "connection_mode" in raw_bot:
+                continue
             connection_mode = (
                 "bundled_napcat"
                 if index == 0 and _looks_like_legacy_bundled_bot(raw_bot, bot_id)
