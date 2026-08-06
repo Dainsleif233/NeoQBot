@@ -4,11 +4,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import secrets
 import time
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, RedirectResponse
@@ -17,7 +19,14 @@ from pydantic import BaseModel, Field
 
 from . import __version__
 from .auth import GuiSession
-from .config import FeishuBotConfig, QQBotConfig, Settings, resolve_secret
+from .config import (
+    FeishuBotConfig,
+    OrchestrationResourceConfig,
+    QQBotConfig,
+    QQGroupAssignment,
+    Settings,
+    resolve_secret,
+)
 from .container import Container
 from .security import FailureLimiter
 
@@ -78,6 +87,30 @@ PLATFORM_SETTINGS_SECTIONS = {
     "gui",
 }
 ORCHESTRATION_SETTINGS_SECTIONS = {"qq", "feishu", "orchestration"}
+GROUP_RECORD_KINDS = {"messages", "announcements", "joins", "moderation"}
+RECORD_TIME_RANGES = {"all", "today", "week", "month", "half_year", "year"}
+
+
+def _record_range_cutoff(
+    time_range: str,
+    timezone_offset_minutes: int = 0,
+    *,
+    now: datetime | None = None,
+) -> datetime | None:
+    if time_range not in RECORD_TIME_RANGES:
+        raise ValueError(f"Unsupported record time range: {time_range}")
+    current = now or datetime.now(UTC)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=UTC)
+    current = current.astimezone(UTC)
+    if time_range == "all":
+        return None
+    if time_range == "today":
+        local_zone = timezone(timedelta(minutes=-timezone_offset_minutes))
+        local_now = current.astimezone(local_zone)
+        return local_now.replace(hour=0, minute=0, second=0, microsecond=0).astimezone(UTC)
+    days = {"week": 7, "month": 30, "half_year": 183, "year": 365}[time_range]
+    return current - timedelta(days=days)
 
 
 def _settings_revision(settings: Settings) -> str:
@@ -790,13 +823,9 @@ def register_gui(
             "has_more": len(records) > limit,
         }
 
-    @app.get("/api/gui/orchestration/group")
-    async def gui_orchestration_group(
-        _: GuiSession = Depends(ready_admin),
-        group_id: str = Query(min_length=1, max_length=160),
-        resource_id: str | None = Query(default=None, max_length=64),
-        limit: int = Query(default=30, ge=1, le=100),
-    ) -> dict[str, Any]:
+    def orchestration_group_context(
+        group_id: str, resource_id: str | None
+    ) -> tuple[OrchestrationResourceConfig, list[QQGroupAssignment], list[dict[str, Any]]]:
         settings = get_settings()
         resource = next(
             (
@@ -804,12 +833,18 @@ def register_gui(
                 for item in settings.orchestration.resources
                 if item.kind in {"qq_group", "feishu_group"}
                 and (
-                    (resource_id and item.id == resource_id)
-                    or (item.external_id and item.external_id == group_id)
+                    (
+                        resource_id is not None
+                        and item.id == resource_id
+                        and item.external_id == group_id
+                    )
+                    or (resource_id is None and item.external_id and item.external_id == group_id)
                 )
             ),
             None,
         )
+        if resource is None:
+            raise HTTPException(status_code=404, detail="资源编排中不存在这个群")
         assignments = [
             assignment
             for assignment in settings.qq_group_assignments(include_disabled=True)
@@ -835,18 +870,155 @@ def register_gui(
             for bot in settings.effective_qq_bots()
             if bot.id in manager_ids
         ]
+        return resource, assignments, managers
+
+    @app.get("/api/gui/orchestration/group")
+    async def gui_orchestration_group(
+        _: GuiSession = Depends(ready_admin),
+        group_id: str = Query(min_length=1, max_length=160),
+        resource_id: str | None = Query(default=None, max_length=64),
+        limit: int = Query(default=30, ge=1, le=100),
+    ) -> dict[str, Any]:
+        resource, _, managers = orchestration_group_context(group_id, resource_id)
         overview = await asyncio.to_thread(
             get_container().database.group_overview,
             group_id,
-            bot_ids=sorted(manager_ids) or None,
             limit=limit,
         )
         return {
-            "resource": resource.model_dump(mode="json") if resource else None,
+            "resource": resource.model_dump(mode="json"),
             "group_id": group_id,
             "managers": managers,
             **overview,
         }
+
+    @app.get("/api/gui/orchestration/group/records")
+    async def gui_orchestration_group_records(
+        _: GuiSession = Depends(ready_admin),
+        group_id: str = Query(min_length=1, max_length=160),
+        resource_id: str | None = Query(default=None, max_length=64),
+        kind: str = Query(default="messages", max_length=32),
+        limit: int = Query(default=50, ge=1, le=200),
+        offset: int = Query(default=0, ge=0, le=1000000),
+        search: str | None = Query(default=None, max_length=120),
+    ) -> dict[str, Any]:
+        if kind not in GROUP_RECORD_KINDS:
+            raise HTTPException(status_code=404, detail="未知群记录类型")
+        orchestration_group_context(group_id, resource_id)
+        records = await asyncio.to_thread(
+            get_container().database.recent_records,
+            kind,
+            limit + 1,
+            group_id=group_id,
+            search=search,
+            offset=offset,
+        )
+        return {
+            "kind": kind,
+            "records": records[:limit],
+            "limit": limit,
+            "offset": offset,
+            "has_more": len(records) > limit,
+        }
+
+    @app.delete("/api/gui/orchestration/group/records/{kind}")
+    async def gui_clear_orchestration_group_records(
+        kind: str,
+        session: GuiSession = Depends(ready_admin_csrf),
+        group_id: str = Query(min_length=1, max_length=160),
+        resource_id: str | None = Query(default=None, max_length=64),
+        time_range: Literal["all", "today", "week", "month", "half_year", "year"] = Query(
+            default="all", alias="range"
+        ),
+        timezone_offset_minutes: int = Query(default=0, ge=-840, le=840),
+    ) -> dict[str, Any]:
+        if kind not in GROUP_RECORD_KINDS:
+            raise HTTPException(status_code=404, detail="未知群记录类型")
+        resource, _, _ = orchestration_group_context(group_id, resource_id)
+        cutoff = _record_range_cutoff(time_range, timezone_offset_minutes)
+        deleted = await asyncio.to_thread(
+            get_container().database.delete_group_records,
+            kind,
+            group_id,
+            since=cutoff,
+        )
+        archive_result = {"records": 0, "files": 0}
+        if kind == "messages":
+            archive_result = await asyncio.to_thread(
+                get_container().message_recorder.clear_group,
+                group_id,
+                since=cutoff,
+            )
+        details = {
+            "username": session.username,
+            "resource_id": resource.id,
+            "kind": kind,
+            "range": time_range,
+            "cutoff": cutoff.isoformat() if cutoff else None,
+            "database_records": deleted,
+            "message_archive": archive_result,
+        }
+        get_container().database.audit(
+            "group_records_clear", "completed", "group", group_id, details
+        )
+        return {"ok": True, **details}
+
+    @app.get("/api/gui/orchestration/group/export")
+    async def gui_export_orchestration_group_records(
+        session: GuiSession = Depends(ready_admin),
+        group_id: str = Query(min_length=1, max_length=160),
+        resource_id: str | None = Query(default=None, max_length=64),
+        kind: Literal["all", "messages", "announcements", "joins", "moderation"] = Query(
+            default="all"
+        ),
+        time_range: Literal["all", "today", "week", "month", "half_year", "year"] = Query(
+            default="all", alias="range"
+        ),
+        timezone_offset_minutes: int = Query(default=0, ge=-840, le=840),
+    ) -> Response:
+        resource, _, managers = orchestration_group_context(group_id, resource_id)
+        cutoff = _record_range_cutoff(time_range, timezone_offset_minutes)
+        selected_kinds = sorted(GROUP_RECORD_KINDS) if kind == "all" else [kind]
+        records: dict[str, list[dict[str, Any]]] = {}
+        for record_kind in selected_kinds:
+            records[record_kind] = await asyncio.to_thread(
+                get_container().database.all_group_records,
+                record_kind,
+                group_id,
+                since=cutoff,
+            )
+        exported_at = datetime.now(UTC).isoformat()
+        payload = {
+            "schema": "neoqbot.group-records.v1",
+            "exported_at": exported_at,
+            "exported_by": session.username,
+            "range": time_range,
+            "cutoff": cutoff.isoformat() if cutoff else None,
+            "group": resource.model_dump(mode="json"),
+            "managers": managers,
+            "counts": {record_kind: len(items) for record_kind, items in records.items()},
+            "records": records,
+        }
+        get_container().database.audit(
+            "group_records_export",
+            "completed",
+            "group",
+            group_id,
+            {
+                "username": session.username,
+                "resource_id": resource.id,
+                "kind": kind,
+                "range": time_range,
+                "counts": payload["counts"],
+            },
+        )
+        safe_group = re.sub(r"[^A-Za-z0-9_.-]+", "-", group_id).strip("-.") or "group"
+        filename = f"neoqbot-group-{safe_group}-{kind}-{time_range}.json"
+        return Response(
+            content=json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+            media_type="application/json",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
 
     @app.post("/api/gui/jobs/{job}")
     async def gui_run_job(

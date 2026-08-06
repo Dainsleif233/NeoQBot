@@ -338,8 +338,15 @@ class AnnouncementService:
             logger.exception("Announcement fetch failed for group %s", group_id)
             fetch_error = str(exc)
         new_count = sum(self.database.upsert_announcement(item) for item in announcements)
+        deleted_count = 0
+        if not fetch_error:
+            deleted_count = self.database.reconcile_announcements(
+                group_id, {item.announcement_id for item in announcements}
+            )
         stats: dict[str, object] = await self.retry_pending(group_id)
-        stats.update({"fetched": len(announcements), "new": new_count})
+        stats.update(
+            {"fetched": len(announcements), "new": new_count, "marked_deleted": deleted_count}
+        )
         if fetch_error:
             stats["fetch_error"] = fetch_error
         self.database.audit(
@@ -353,9 +360,7 @@ class AnnouncementService:
             return {"synced": 0, "failed": 0}
         synced = 0
         failed = 0
-        for row_id, announcement in self.database.pending_announcements(
-            group_id=group_id, bot_id=self.bot.id
-        ):
+        for row_id, announcement in self.database.claim_pending_announcements(group_id=group_id):
             try:
                 await feishu.archive_announcement(announcement)
                 self.database.mark_announcement_sync(row_id, True)

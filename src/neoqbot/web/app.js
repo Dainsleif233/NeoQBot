@@ -29,6 +29,11 @@
     orchestrationIdentityChanges: { qq_created: [], qq_deleted: [], feishu_created: [], feishu_deleted: [] },
     orchestrationContextNodeId: "",
     nodeDialog: null,
+    groupWorkspaceNodeId: "",
+    groupWorkspaceKind: "messages",
+    groupWorkspaceOffset: 0,
+    groupWorkspaceHasMore: false,
+    groupWorkspaceSearchTimer: null,
     recordsOffset: 0,
     recordsHasMore: false,
     recordsSearchTimer: null,
@@ -872,6 +877,11 @@
         renderOrchestrationInspector(node.id);
         showNodeContextMenu(node, event.clientX, event.clientY);
       });
+      card.addEventListener("dblclick", function (event) {
+        if (node.kind !== "qq_group" || event.target.closest("button")) return;
+        event.preventDefault();
+        openGroupWorkspace(node);
+      });
       card.addEventListener("pointerdown", function (event) {
         if (event.button !== 0 || event.target.closest("button, input, textarea, select")) return;
         state.orchestrationDrag = { id: node.id, startX: event.clientX, startY: event.clientY, x: position.x, y: position.y, moved: false };
@@ -1017,6 +1027,393 @@
       host.textContent = error.message;
     }
   }
+
+  function groupRecordKindLabel(kind) {
+    return { messages: "聊天记录", announcements: "群公告", joins: "入群申请", moderation: "风控分析" }[kind] || "群记录";
+  }
+
+  function groupRecordRangeLabel(value) {
+    return { all: "全部记录", today: "今天", week: "最近一周", month: "最近一月", half_year: "最近半年", year: "最近一年" }[value] || value;
+  }
+
+  function displayRecordTime(value) {
+    if (!value) return "时间未知";
+    var parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return value;
+    return parsed.toLocaleString("zh-CN", { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  }
+
+  function currentGroupWorkspaceNode() {
+    return graphNode(state.groupWorkspaceNodeId);
+  }
+
+  function groupWorkspaceParameters(extra) {
+    var node = currentGroupWorkspaceNode();
+    if (!node) throw new Error("群节点已经不存在，请关闭窗口后重试");
+    var parameters = new URLSearchParams({
+      group_id: node.ref.external_id,
+      resource_id: node.ref.id
+    });
+    Object.keys(extra || {}).forEach(function (key) {
+      if (extra[key] !== undefined && extra[key] !== null && extra[key] !== "") parameters.set(key, String(extra[key]));
+    });
+    return parameters;
+  }
+
+  function appendGroupProfileValue(target, label, value) {
+    var term = document.createElement("dt");
+    var description = document.createElement("dd");
+    term.textContent = label;
+    description.textContent = value || "未设置";
+    target.append(term, description);
+  }
+
+  function renderGroupWorkspaceMetadata(data) {
+    var resource = data.resource || {};
+    $("group-workspace-title").textContent = resource.name || "QQ群 " + data.group_id;
+    $("group-workspace-subtitle").textContent = "群号 " + data.group_id + " · " + data.managers.length + " 个关联 Bot";
+    $("group-workspace-avatar").textContent = (resource.name || "群").charAt(0).toUpperCase();
+    ["messages", "announcements", "joins", "moderation"].forEach(function (kind) {
+      $("group-count-" + kind).textContent = data.counts[kind] || 0;
+    });
+    var profile = $("group-profile-list");
+    profile.replaceChildren();
+    appendGroupProfileValue(profile, "群名称", resource.name || "未命名群");
+    appendGroupProfileValue(profile, "QQ群号", data.group_id);
+    appendGroupProfileValue(profile, "资源 ID", resource.id);
+    appendGroupProfileValue(profile, "状态", resource.enabled === false ? "已停用" : "已启用");
+    appendGroupProfileValue(profile, "说明", resource.description || "暂无说明");
+    var managerList = $("group-manager-list");
+    managerList.replaceChildren();
+    data.managers.forEach(function (manager) {
+      var card = document.createElement("article");
+      var tasks = [];
+      (manager.assignments || []).forEach(function (assignment) {
+        if (assignment.tasks.join_management.enabled) tasks.push("入群管理");
+        if (assignment.tasks.message_detection.enabled) tasks.push("消息记录");
+        if (assignment.tasks.announcement_sync.enabled) tasks.push("公告同步");
+      });
+      card.innerHTML = '<span class="group-manager-avatar"></span><div><strong></strong><small></small></div><i></i>';
+      card.querySelector(".group-manager-avatar").textContent = (manager.name || manager.id).charAt(0).toUpperCase();
+      card.querySelector("strong").textContent = manager.name || manager.id;
+      card.querySelector("small").textContent = tasks.length ? Array.from(new Set(tasks)).join(" · ") : "仅保留连接";
+      card.querySelector("i").className = manager.enabled ? "online" : "";
+      card.querySelector("i").title = manager.enabled ? "Bot 已启用" : "Bot 已停用";
+      managerList.appendChild(card);
+    });
+    if (!data.managers.length) {
+      var empty = document.createElement("p");
+      empty.className = "muted";
+      empty.textContent = "尚未连接 QQ Bot。";
+      managerList.appendChild(empty);
+    }
+  }
+
+  function groupStatusTag(text, tone) {
+    var tag = document.createElement("span");
+    tag.className = "group-status-tag" + (tone ? " " + tone : "");
+    tag.textContent = text;
+    return tag;
+  }
+
+  function joinStatusLabel(value) {
+    return {
+      received: "已登记",
+      detected: "仅检测",
+      manual_review: "待人工审核",
+      approved: "已同意",
+      rejected: "已拒绝",
+      dry_run: "演练未执行",
+      action_failed: "执行失败"
+    }[value] || value || "已登记";
+  }
+
+  function joinDecisionLabel(value) {
+    return { approve: "建议同意", reject: "建议拒绝", manual_review: "转人工审核" }[value] || value;
+  }
+
+  function renderGroupMessages(records, target) {
+    records.slice().reverse().forEach(function (record) {
+      var row = document.createElement("article");
+      row.className = "qq-message-row";
+      var avatar = document.createElement("span");
+      avatar.className = "qq-message-avatar";
+      avatar.textContent = (record.user_id || "?").charAt(0).toUpperCase();
+      var body = document.createElement("div");
+      body.className = "qq-message-body";
+      var meta = document.createElement("div");
+      meta.className = "qq-message-meta";
+      var sender = document.createElement("strong");
+      sender.textContent = record.user_id || "未知成员";
+      var source = document.createElement("span");
+      source.textContent = (record.bot_id ? "经 " + record.bot_id + " 收集 · " : "") + displayRecordTime(record.sent_at);
+      meta.append(sender, source);
+      var bubble = document.createElement("div");
+      bubble.className = "qq-message-bubble";
+      bubble.textContent = record.text || "[空消息]";
+      var id = document.createElement("small");
+      id.textContent = "消息 ID：" + (record.message_id || "-");
+      body.append(meta, bubble, id);
+      row.append(avatar, body);
+      target.appendChild(row);
+    });
+  }
+
+  function renderGroupAnnouncements(records, target) {
+    records.forEach(function (record) {
+      var card = document.createElement("article");
+      card.className = "group-announcement-card" + (record.is_deleted ? " deleted" : "");
+      var header = document.createElement("header");
+      var copy = document.createElement("div");
+      var title = document.createElement("h3");
+      title.textContent = record.title || "未命名公告";
+      var meta = document.createElement("small");
+      meta.textContent = "公告 ID：" + record.announcement_id + " · " + displayRecordTime(record.published_at || record.first_seen_at);
+      copy.append(title, meta);
+      var tags = document.createElement("div");
+      tags.className = "group-status-tags";
+      if (record.is_deleted) tags.appendChild(groupStatusTag("已在群聊删除", "danger"));
+      else if (record.is_current) tags.appendChild(groupStatusTag("当前公告", "success"));
+      else tags.appendChild(groupStatusTag("历史版本", "muted"));
+      tags.appendChild(groupStatusTag(record.sync_status === "synced" ? "已归档" : record.sync_status === "failed" ? "归档失败" : record.sync_status === "syncing" ? "归档中" : "待归档", record.sync_status === "failed" ? "danger" : ""));
+      header.append(copy, tags);
+      var content = document.createElement("p");
+      content.textContent = record.content || "[空公告]";
+      var footer = document.createElement("footer");
+      var sources = Array.isArray(record.source_bot_ids_json) ? record.source_bot_ids_json : [record.bot_id].filter(Boolean);
+      footer.textContent = "发布者 " + (record.author_id || "未知") + " · 来源 Bot " + (sources.join("、") || "未知") + " · 最后发现 " + displayRecordTime(record.last_seen_at);
+      card.append(header, content, footer);
+      target.appendChild(card);
+    });
+  }
+
+  function renderGroupJoins(records, target) {
+    records.forEach(function (record) {
+      var card = document.createElement("article");
+      card.className = "group-join-card";
+      var avatar = document.createElement("span");
+      avatar.className = "group-join-avatar";
+      avatar.textContent = (record.user_id || "?").charAt(0).toUpperCase();
+      var body = document.createElement("div");
+      var heading = document.createElement("header");
+      var title = document.createElement("div");
+      var strong = document.createElement("strong");
+      strong.textContent = "申请人 " + (record.user_id || "未知");
+      var time = document.createElement("small");
+      time.textContent = displayRecordTime(record.received_at) + " · 经 " + (record.bot_id || "未知 Bot") + " 收集";
+      title.append(strong, time);
+      var status = record.action_status || "received";
+      heading.append(title, groupStatusTag(joinStatusLabel(status), status === "approved" ? "success" : status === "rejected" || status === "action_failed" ? "danger" : ""));
+      var comment = document.createElement("p");
+      comment.textContent = record.comment || "未填写入群说明";
+      var result = document.createElement("footer");
+      result.textContent = record.decision ? "判断：" + joinDecisionLabel(record.decision) + " · 置信度 " + (record.confidence === null ? "-" : record.confidence) + " · " + (record.reason || "无补充原因") : "尚未形成审核结论";
+      body.append(heading, comment, result);
+      card.append(avatar, body);
+      target.appendChild(card);
+    });
+  }
+
+  function renderGroupModeration(records, target) {
+    records.forEach(function (record) {
+      var result = record.result_json || {};
+      var card = document.createElement("article");
+      card.className = "group-moderation-card";
+      var header = document.createElement("header");
+      var title = document.createElement("div");
+      var strong = document.createElement("strong");
+      strong.textContent = result.summary || "群消息分析";
+      var time = document.createElement("small");
+      time.textContent = displayRecordTime(record.window_start) + " — " + displayRecordTime(record.window_end);
+      title.append(strong, time);
+      header.append(title, groupStatusTag("风险 " + Number(record.max_risk || 0).toFixed(2), Number(record.max_risk || 0) >= 0.8 ? "danger" : ""));
+      var overview = document.createElement("p");
+      overview.textContent = "分析 " + (record.message_count || 0) + " 条消息 · " + (record.alerted ? "已通知管理员" : "未触发通知");
+      var findings = document.createElement("div");
+      findings.className = "group-finding-list";
+      (result.findings || []).forEach(function (finding) {
+        var item = document.createElement("article");
+        var findingTitle = document.createElement("strong");
+        findingTitle.textContent = (finding.severity || "-") + " · " + (finding.category || "未分类") + " · " + Number(finding.risk_score || 0).toFixed(2);
+        var reason = document.createElement("p");
+        reason.textContent = finding.reason || "无说明";
+        item.append(findingTitle, reason);
+        findings.appendChild(item);
+      });
+      if (!findings.children.length) {
+        var safe = document.createElement("p");
+        safe.className = "muted";
+        safe.textContent = "本次分析没有风险发现。";
+        findings.appendChild(safe);
+      }
+      card.append(header, overview, findings);
+      target.appendChild(card);
+    });
+  }
+
+  function renderGroupWorkspaceRecords(data) {
+    var target = $("group-record-content");
+    target.replaceChildren();
+    target.className = "group-record-content " + state.groupWorkspaceKind;
+    var records = data.records || [];
+    if (!records.length) {
+      var empty = document.createElement("div");
+      empty.className = "group-record-empty";
+      empty.innerHTML = "<span>⌁</span><strong></strong><p></p>";
+      empty.querySelector("strong").textContent = "还没有" + groupRecordKindLabel(state.groupWorkspaceKind);
+      empty.querySelector("p").textContent = state.groupWorkspaceOffset ? "当前页没有记录，请返回上一页。" : "Bot 收集到的数据会按时间显示在这里。";
+      target.appendChild(empty);
+    } else if (state.groupWorkspaceKind === "messages") renderGroupMessages(records, target);
+    else if (state.groupWorkspaceKind === "announcements") renderGroupAnnouncements(records, target);
+    else if (state.groupWorkspaceKind === "joins") renderGroupJoins(records, target);
+    else renderGroupModeration(records, target);
+    state.groupWorkspaceHasMore = Boolean(data.has_more);
+    var start = records.length ? state.groupWorkspaceOffset + 1 : 0;
+    var end = state.groupWorkspaceOffset + records.length;
+    $("group-record-page-state").textContent = records.length ? "显示第 " + start + "–" + end + " 条" : "0 条记录";
+    $("group-record-prev").disabled = state.groupWorkspaceOffset <= 0;
+    $("group-record-next").disabled = !state.groupWorkspaceHasMore;
+  }
+
+  async function loadGroupWorkspaceMetadata() {
+    var data = await api("/api/gui/orchestration/group?" + groupWorkspaceParameters({ limit: 8 }).toString());
+    if (!$("group-workspace-dialog").open) return;
+    renderGroupWorkspaceMetadata(data);
+  }
+
+  async function loadGroupWorkspaceRecords(resetOffset) {
+    if (resetOffset) state.groupWorkspaceOffset = 0;
+    var kind = state.groupWorkspaceKind;
+    var offset = state.groupWorkspaceOffset;
+    var target = $("group-record-content");
+    target.className = "group-record-content loading";
+    target.innerHTML = '<div class="group-record-loading"><span></span><p>正在读取' + groupRecordKindLabel(kind) + '…</p></div>';
+    var parameters = groupWorkspaceParameters({
+      kind: kind,
+      limit: 50,
+      offset: offset,
+      search: $("group-record-search").value.trim()
+    });
+    var data = await api("/api/gui/orchestration/group/records?" + parameters.toString());
+    if (!$("group-workspace-dialog").open || kind !== state.groupWorkspaceKind || offset !== state.groupWorkspaceOffset) return;
+    renderGroupWorkspaceRecords(data);
+  }
+
+  async function refreshGroupWorkspace(resetOffset) {
+    try {
+      await Promise.all([loadGroupWorkspaceMetadata(), loadGroupWorkspaceRecords(resetOffset)]);
+    } catch (error) {
+      $("group-record-content").className = "group-record-content";
+      $("group-record-content").textContent = error.status === 404 && state.orchestrationDirty ? "这个群尚未保存到资源编排。请先保存编排，再打开群详情。" : error.message;
+    }
+  }
+
+  function openGroupWorkspace(node) {
+    if (!node || node.kind !== "qq_group") return;
+    if (!node.ref.external_id) {
+      showToast("请先为群节点填写 QQ 群号", true);
+      return;
+    }
+    state.groupWorkspaceNodeId = node.id;
+    state.groupWorkspaceKind = "messages";
+    state.groupWorkspaceOffset = 0;
+    state.groupWorkspaceHasMore = false;
+    $("group-record-search").value = "";
+    $("group-record-range").value = "all";
+    document.querySelectorAll("[data-group-tab]").forEach(function (button) {
+      button.classList.toggle("active", button.dataset.groupTab === "messages");
+    });
+    $("group-workspace-title").textContent = node.name;
+    $("group-workspace-subtitle").textContent = "群号 " + node.ref.external_id;
+    $("group-workspace-avatar").textContent = (node.name || "群").charAt(0).toUpperCase();
+    $("group-workspace-dialog").showModal();
+    refreshGroupWorkspace(true);
+  }
+
+  async function downloadGroupWorkspaceRecords(kind) {
+    var range = $("group-record-range").value;
+    var parameters = groupWorkspaceParameters({
+      kind: kind,
+      range: range,
+      timezone_offset_minutes: new Date().getTimezoneOffset()
+    });
+    var response = await fetch("/api/gui/orchestration/group/export?" + parameters.toString());
+    if (!response.ok) {
+      var detail = {};
+      try { detail = await response.json(); } catch (_) {}
+      if (response.status === 401) showLogin();
+      throw new Error(errorText(detail.detail || "导出失败"));
+    }
+    var blob = await response.blob();
+    var disposition = response.headers.get("Content-Disposition") || "";
+    var match = disposition.match(/filename="([^"]+)"/i);
+    var link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = match ? match[1] : "neoqbot-group-records.json";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(function () { URL.revokeObjectURL(link.href); }, 1000);
+    showToast("已导出" + groupRecordRangeLabel(range) + "的" + (kind === "all" ? "全部群记录" : groupRecordKindLabel(kind)));
+  }
+
+  async function clearCurrentGroupRecords() {
+    var kind = state.groupWorkspaceKind;
+    var range = $("group-record-range").value;
+    var warning = kind === "announcements" ? "当前仍存在于 QQ 的公告可能在下次同步时重新归档。" : "";
+    if (!await confirmAction({
+      title: "清除" + groupRecordKindLabel(kind) + "？",
+      message: "将永久清除这个群“" + groupRecordRangeLabel(range) + "”范围内的" + groupRecordKindLabel(kind) + "。" + warning + " 此操作会写入审计日志，但记录本身无法恢复。",
+      confirmText: "确认清除",
+      danger: true
+    })) return;
+    var parameters = groupWorkspaceParameters({
+      range: range,
+      timezone_offset_minutes: new Date().getTimezoneOffset()
+    });
+    var result = await api("/api/gui/orchestration/group/records/" + encodeURIComponent(kind) + "?" + parameters.toString(), { method: "DELETE" });
+    var archiveCount = result.message_archive ? result.message_archive.records : 0;
+    showToast("已清除 " + result.database_records + " 条数据库记录" + (archiveCount ? "，并移除 " + archiveCount + " 条 JSONL 归档" : ""));
+    await refreshGroupWorkspace(true);
+  }
+
+  document.querySelectorAll("[data-group-tab]").forEach(function (button) {
+    button.addEventListener("click", function () {
+      state.groupWorkspaceKind = button.dataset.groupTab;
+      state.groupWorkspaceOffset = 0;
+      $("group-record-search").value = "";
+      document.querySelectorAll("[data-group-tab]").forEach(function (item) { item.classList.toggle("active", item === button); });
+      loadGroupWorkspaceRecords(true).catch(function (error) { showToast(error.message, true); });
+    });
+  });
+  $("group-workspace-close").addEventListener("click", function () { $("group-workspace-dialog").close(); });
+  $("group-workspace-dialog").addEventListener("cancel", function () { state.groupWorkspaceNodeId = ""; });
+  $("group-workspace-dialog").addEventListener("close", function () { state.groupWorkspaceNodeId = ""; });
+  $("group-workspace-refresh").addEventListener("click", function () { refreshGroupWorkspace(false); });
+  $("group-record-search").addEventListener("input", function () {
+    window.clearTimeout(state.groupWorkspaceSearchTimer);
+    state.groupWorkspaceSearchTimer = window.setTimeout(function () {
+      loadGroupWorkspaceRecords(true).catch(function (error) { showToast(error.message, true); });
+    }, 280);
+  });
+  $("group-record-prev").addEventListener("click", function () {
+    state.groupWorkspaceOffset = Math.max(0, state.groupWorkspaceOffset - 50);
+    loadGroupWorkspaceRecords(false).catch(function (error) { showToast(error.message, true); });
+  });
+  $("group-record-next").addEventListener("click", function () {
+    if (!state.groupWorkspaceHasMore) return;
+    state.groupWorkspaceOffset += 50;
+    loadGroupWorkspaceRecords(false).catch(function (error) { showToast(error.message, true); });
+  });
+  $("group-record-export").addEventListener("click", function () {
+    downloadGroupWorkspaceRecords(state.groupWorkspaceKind).catch(function (error) { showToast(error.message, true); });
+  });
+  $("group-workspace-export-all").addEventListener("click", function () {
+    downloadGroupWorkspaceRecords("all").catch(function (error) { showToast(error.message, true); });
+  });
+  $("group-record-clear").addEventListener("click", function () {
+    clearCurrentGroupRecords().catch(function (error) { showToast(error.message, true); });
+  });
 
   function createAssignmentTaskEditor(edge) {
     edge.tasks = edge.tasks || defaultQQTasks();
@@ -1426,6 +1823,7 @@
     var menu = $("orchestration-node-menu");
     $("orchestration-menu").classList.add("hidden");
     $("orchestration-node-menu-label").textContent = nodeKindLabel(node.kind) + " · " + node.name;
+    menu.querySelector('[data-node-action="view"]').classList.toggle("hidden", node.kind !== "qq_group");
     menu.style.left = Math.min(clientX, window.innerWidth - 250) + "px";
     menu.style.top = Math.min(clientY, window.innerHeight - 300) + "px";
     menu.classList.remove("hidden");
@@ -1462,6 +1860,7 @@
       var node = graphNode(state.orchestrationContextNodeId);
       $("orchestration-node-menu").classList.add("hidden");
       if (!node) return;
+      if (button.dataset.nodeAction === "view") openGroupWorkspace(node);
       if (button.dataset.nodeAction === "edit") openNodeDetail(node.id);
       if (button.dataset.nodeAction === "focus") focusOrchestrationNode(node.id);
       if (button.dataset.nodeAction === "toggle") {

@@ -187,6 +187,7 @@
 
         <div id="orchestration-node-menu" class="context-menu hidden" role="menu">
           <div id="orchestration-node-menu-label" class="context-menu-label">节点</div>
+          <button type="button" data-node-action="view"><span>▣</span><div><strong>查看详细</strong><small>打开群消息、公告和申请工作台</small></div></button>
           <button type="button" data-node-action="edit"><span>✎</span><div><strong>详细编辑</strong><small>在当前页面打开中心配置窗口</small></div></button>
           <button type="button" data-node-action="focus"><span>◎</span><div><strong>定位节点</strong><small>选中并将节点移动到视野中心</small></div></button>
           <button type="button" data-node-action="toggle"><span>◐</span><div><strong>启用 / 停用</strong><small>保留节点、连接和全部配置</small></div></button>
@@ -224,6 +225,44 @@
             <div id="node-detail-body" class="node-detail-body"></div>
             <footer class="button-row"><button id="node-detail-cancel" class="button ghost" type="button">取消</button><button id="node-detail-save" class="button primary" type="submit">保存并应用</button></footer>
           </form>
+        </dialog>
+
+        <dialog id="group-workspace-dialog" class="group-workspace-dialog">
+          <div class="group-workspace-shell">
+            <header class="group-workspace-header">
+              <div class="group-workspace-identity">
+                <span id="group-workspace-avatar" class="group-workspace-avatar">群</span>
+                <div><p class="eyebrow">QQ Group workspace</p><h2 id="group-workspace-title">群详情</h2><small id="group-workspace-subtitle">正在读取群资料…</small></div>
+              </div>
+              <div class="button-row">
+                <button id="group-workspace-export-all" class="button secondary" type="button">导出全部</button>
+                <button id="group-workspace-refresh" class="button ghost" type="button">刷新</button>
+                <button id="group-workspace-close" class="icon-button" type="button" aria-label="关闭群详情">×</button>
+              </div>
+            </header>
+            <div class="group-workspace-layout">
+              <nav class="group-workspace-tabs" aria-label="群记录分类">
+                <button type="button" data-group-tab="messages" class="active"><span>消息</span><strong id="group-count-messages">0</strong><small>群聊记录</small></button>
+                <button type="button" data-group-tab="announcements"><span>公告</span><strong id="group-count-announcements">0</strong><small>历史版本与状态</small></button>
+                <button type="button" data-group-tab="joins"><span>申请</span><strong id="group-count-joins">0</strong><small>入群审核记录</small></button>
+                <button type="button" data-group-tab="moderation"><span>分析</span><strong id="group-count-moderation">0</strong><small>风控分析结果</small></button>
+              </nav>
+              <main class="group-workspace-main">
+                <div class="group-record-toolbar">
+                  <label class="group-record-search"><span>搜索当前分类</span><input id="group-record-search" placeholder="搜索成员、内容或记录 ID" autocomplete="off"></label>
+                  <label><span>操作范围</span><select id="group-record-range"><option value="all">全部记录</option><option value="today">今天</option><option value="week">最近一周</option><option value="month">最近一月</option><option value="half_year">最近半年</option><option value="year">最近一年</option></select></label>
+                  <div class="button-row group-record-actions"><button id="group-record-export" class="button secondary" type="button">导出当前分类</button><button id="group-record-clear" class="button danger" type="button">清除当前分类</button></div>
+                </div>
+                <div id="group-record-content" class="group-record-content" aria-live="polite"></div>
+                <footer class="group-record-pagination"><span id="group-record-page-state">0 条记录</span><div class="button-row"><button id="group-record-prev" class="button ghost" type="button">上一页</button><button id="group-record-next" class="button ghost" type="button">下一页</button></div></footer>
+              </main>
+              <aside class="group-workspace-info">
+                <section><p class="eyebrow">Group profile</p><h3>群资料</h3><dl id="group-profile-list"></dl></section>
+                <section><p class="eyebrow">Connected bots</p><h3>关联 Bot</h3><div id="group-manager-list" class="group-manager-list"></div></section>
+                <section class="group-archive-note"><strong>档案策略</strong><p>公告被 QQ 删除后仍保留在这里，并显示“已在群聊删除”。编辑后的旧内容作为历史版本留档。</p></section>
+              </aside>
+            </div>
+          </div>
         </dialog>
       </section>
 
@@ -397,6 +436,6 @@
     <footer><span><kbd>↑</kbd><kbd>↓</kbd> 选择</span><span><kbd>Enter</kbd> 执行</span><span><kbd>Esc</kbd> 关闭</span></footer>
   </dialog>
 
-  <script src="/gui/assets/app.js?v=20260806-2" defer></script>
+  <script src="/gui/assets/app.js?v=20260806-3" defer></script>
 </body>
 </html>
