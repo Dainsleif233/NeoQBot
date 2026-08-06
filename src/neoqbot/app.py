@@ -121,6 +121,7 @@ def create_app(settings: Settings | None = None, config_path: str | Path | None 
     app.state.container = container
     admin_failures = FailureLimiter()
     webhook_failures = FailureLimiter()
+    legacy_webhook_aliases_logged: set[str] = set()
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
@@ -269,25 +270,65 @@ def create_app(settings: Settings | None = None, config_path: str | Path | None 
             raise HTTPException(status_code=503, detail="Event queue is full") from exc
         return {"accepted": True, "bot_id": bot.id}
 
+    def resolve_onebot_webhook_bot_id(requested_bot_id: str | None = None) -> str:
+        if requested_bot_id:
+            exact = resolved_settings.qq_bot(requested_bot_id)
+            if exact is not None:
+                return exact.id
+            bundled = resolved_settings.bundled_qq_bot()
+            if bundled is not None and requested_bot_id.lower() in {
+                "default",
+                "bundled",
+                "napcat",
+                "qq-bridge",
+            }:
+                alias = requested_bot_id.lower()
+                if alias not in legacy_webhook_aliases_logged:
+                    legacy_webhook_aliases_logged.add(alias)
+                    logger.warning(
+                        "Accepted legacy OneBot webhook alias %s for bundled bot %s; "
+                        "refresh the NapCat HTTP client configuration",
+                        requested_bot_id,
+                        bundled.id,
+                    )
+                    container.database.audit(
+                        "onebot_webhook_alias",
+                        "accepted",
+                        "qq_bot",
+                        bundled.id,
+                        {"alias": requested_bot_id},
+                    )
+                return bundled.id
+            raise HTTPException(status_code=404, detail="Unknown QQ Bot")
+        bot = resolved_settings.bundled_qq_bot() or resolved_settings.qq_bot()
+        if bot is None:
+            raise HTTPException(status_code=503, detail="No QQ Bot is configured")
+        return bot.id
+
     @app.post("/webhooks/onebot", status_code=status.HTTP_200_OK)
+    @app.post("/webhooks/onebot/", status_code=status.HTTP_200_OK, include_in_schema=False)
     async def onebot_webhook(
         request: Request,
         x_signature: Annotated[str | None, Header()] = None,
         authorization: Annotated[str | None, Header()] = None,
     ) -> dict[str, object]:
-        bot = resolved_settings.bundled_qq_bot() or resolved_settings.qq_bot()
-        if bot is None:
-            raise HTTPException(status_code=503, detail="No QQ Bot is configured")
-        return await accept_onebot_webhook(bot.id, request, x_signature, authorization)
+        bot_id = resolve_onebot_webhook_bot_id()
+        return await accept_onebot_webhook(bot_id, request, x_signature, authorization)
 
     @app.post("/webhooks/onebot/{bot_id}", status_code=status.HTTP_200_OK)
+    @app.post(
+        "/webhooks/onebot/{bot_id}/",
+        status_code=status.HTTP_200_OK,
+        include_in_schema=False,
+    )
     async def onebot_bot_webhook(
         bot_id: str,
         request: Request,
         x_signature: Annotated[str | None, Header()] = None,
         authorization: Annotated[str | None, Header()] = None,
     ) -> dict[str, object]:
-        return await accept_onebot_webhook(bot_id, request, x_signature, authorization)
+        resolved_bot_id = resolve_onebot_webhook_bot_id(bot_id)
+        return await accept_onebot_webhook(resolved_bot_id, request, x_signature, authorization)
 
     @app.get("/api/v1/status", dependencies=[Depends(require_admin)])
     async def api_status() -> dict[str, object]:

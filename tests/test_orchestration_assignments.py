@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import time
 import unittest
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -558,20 +559,29 @@ class NapCatInitializationTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             napcat_config = Path(directory) / "napcat-config"
             napcat_config.mkdir()
+            legacy_config = {
+                "network": {
+                    "httpClients": [
+                        {
+                            "name": "legacy-neoqbot-client",
+                            "enable": True,
+                            "url": "http://neoqbot:8080/webhooks/onebot/default",
+                        },
+                        {
+                            "name": "another-service",
+                            "enable": True,
+                            "url": "http://example.test/events",
+                        },
+                    ]
+                }
+            }
             (napcat_config / "onebot11.json").write_text(
-                json.dumps(
-                    {
-                        "network": {
-                            "httpClients": [
-                                {
-                                    "name": "neoqbot-events",
-                                    "enable": True,
-                                    "url": "http://neoqbot:8080/webhooks/onebot/default",
-                                }
-                            ]
-                        }
-                    }
-                ),
+                json.dumps(legacy_config),
+                encoding="utf-8",
+            )
+            account_config_path = napcat_config / "onebot11_2523026981.json"
+            account_config_path.write_text(
+                json.dumps(legacy_config),
                 encoding="utf-8",
             )
             result = initialize_napcat(
@@ -579,14 +589,30 @@ class NapCatInitializationTests(unittest.TestCase):
                 Path(directory) / "secrets",
             )
             onebot = json.loads(Path(result["onebot_config"]).read_text(encoding="utf-8"))
+            account_onebot = json.loads(account_config_path.read_text(encoding="utf-8"))
 
-        event_client = next(
-            item for item in onebot["network"]["httpClients"] if item["name"] == "neoqbot-events"
-        )
-        self.assertEqual(event_client["url"], "http://neoqbot:8080/webhooks/onebot")
-        self.assertEqual(
-            sum(item.get("name") == "neoqbot-events" for item in onebot["network"]["httpClients"]),
-            1,
+        for configured in (onebot, account_onebot):
+            event_client = next(
+                item
+                for item in configured["network"]["httpClients"]
+                if item["name"] == "neoqbot-events"
+            )
+            self.assertEqual(event_client["url"], "http://neoqbot:8080/webhooks/onebot")
+            self.assertEqual(
+                sum(
+                    item.get("name") == "neoqbot-events"
+                    for item in configured["network"]["httpClients"]
+                ),
+                1,
+            )
+            self.assertFalse(
+                any(
+                    item.get("url") == "http://neoqbot:8080/webhooks/onebot/default"
+                    for item in configured["network"]["httpClients"]
+                )
+            )
+        self.assertTrue(
+            any(item.get("name") == "another-service" for item in onebot["network"]["httpClients"])
         )
 
 
@@ -656,6 +682,95 @@ class WebhookIsolationTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["bot_id"], "mualliance1")
         submit.assert_awaited_once()
+
+    def test_legacy_default_webhook_alias_reaches_the_real_message_recorder(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            settings = Settings.model_validate(
+                {
+                    "app": {
+                        "database_path": str(root / "legacy-webhook.db"),
+                        "message_archive_path": str(root / "messages"),
+                    },
+                    "gui": {"enabled": False},
+                    "qq": {
+                        "bots": [
+                            {
+                                "id": "mualliance1",
+                                "name": "Bundled",
+                                "enabled": True,
+                                "connection_mode": "bundled_napcat",
+                            }
+                        ]
+                    },
+                    "feishu": {"bots": []},
+                    "orchestration": {
+                        "resources": [
+                            {
+                                "id": "main-group",
+                                "kind": "qq_group",
+                                "name": "Main",
+                                "external_id": "1081589022",
+                            }
+                        ],
+                        "edges": [
+                            {
+                                "id": "bundled-main",
+                                "source": "qq-bot:mualliance1",
+                                "target": "main-group",
+                                "relation": "observes",
+                                "tasks": {"message_detection": {"record": True}},
+                            }
+                        ],
+                    },
+                }
+            )
+            app = create_app(settings)
+
+            with (
+                patch("neoqbot.app.resolve_secret", return_value="test-onebot-token"),
+                TestClient(app) as client,
+            ):
+                response = client.post(
+                    "/webhooks/onebot/default/",
+                    headers={"Authorization": "Bearer test-onebot-token"},
+                    json={
+                        "post_type": "message",
+                        "message_type": "group",
+                        "group_id": 1081589022,
+                        "message_id": 38,
+                        "user_id": 2523026981,
+                        "sender": {"card": "USTB LYOfficial"},
+                        "time": 1786012694,
+                        "message": [{"type": "text", "data": {"text": "test2"}}],
+                    },
+                )
+                deadline = time.monotonic() + 2
+                while (
+                    app.state.container.database.counts()["group_messages"] == 0
+                    and time.monotonic() < deadline
+                ):
+                    time.sleep(0.01)
+                records = app.state.container.database.recent_records(
+                    "messages", group_id="1081589022", limit=10
+                )
+                alias_audit = app.state.container.database.recent_records(
+                    "audit", search="onebot_webhook_alias", limit=10
+                )
+                unknown = client.post(
+                    "/webhooks/onebot/obsolete",
+                    headers={"Authorization": "Bearer test-onebot-token"},
+                    json={"post_type": "meta_event"},
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["bot_id"], "mualliance1")
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["sender_name"], "USTB LYOfficial")
+        self.assertEqual(records[0]["text"], "test2")
+        self.assertEqual(len(alias_audit), 1)
+        self.assertEqual(alias_audit[0]["details_json"]["alias"], "default")
+        self.assertEqual(unknown.status_code, 404)
 
     def test_unmanaged_group_event_is_not_submitted_to_runtime(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:

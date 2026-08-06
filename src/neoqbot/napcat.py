@@ -8,6 +8,7 @@ import tempfile
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -106,6 +107,7 @@ def initialize_napcat(
     webui_port: int = 6099,
 ) -> dict[str, str]:
     """Create persistent secrets and enforce the NapCat endpoints NeoQBot requires."""
+    webhook_url = webhook_url.rstrip("/")
     config_path = Path(config_dir)
     secret_files = initialize_secrets(secret_dir)
     onebot_token_path = Path(secret_files["onebot_token_file"])
@@ -143,6 +145,16 @@ def initialize_napcat(
         retained.append(replacement)
         return retained
 
+    def conflicts_with_neoqbot_webhook(item: dict[str, Any]) -> bool:
+        url = str(item.get("url") or "")
+        if url.rstrip("/") == webhook_url:
+            return True
+        try:
+            path = urlsplit(url).path.rstrip("/")
+        except ValueError:
+            return False
+        return path == "/webhooks/onebot" or path.startswith("/webhooks/onebot/")
+
     def configure_onebot(path: Path) -> None:
         onebot_config = _load_json(path)
         network = onebot_config.get("network")
@@ -177,7 +189,7 @@ def initialize_napcat(
                 "token": onebot_token,
                 "debug": False,
             },
-            conflicts=lambda item: item.get("url") == webhook_url,
+            conflicts=conflicts_with_neoqbot_webhook,
         )
         network.setdefault("httpSseServers", [])
         network.setdefault("websocketServers", [])

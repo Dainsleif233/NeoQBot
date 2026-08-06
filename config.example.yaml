@@ -28,7 +28,7 @@ app:
   expose_api_docs: false
 
 qq:
-  # 每个账号是独立 Bot 节点；NapCat 反向 HTTP 地址为 /webhooks/onebot/<bot-id>。
+  # 内置 NapCat 统一上报到 /webhooks/onebot；外部实例可使用 /webhooks/onebot/<bot-id>。
   bots:
     - id: default
       name: 默认 QQ Bot

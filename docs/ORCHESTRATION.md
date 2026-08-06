@@ -35,6 +35,11 @@ Secret 和二维码卷；整个部署最多只能有一个此类节点。其事�
 必须选择 `external`，分别配置独立的 OneBot/NapCat 地址、Token 文件和二维码路径；一个
 NapCat 进程不能同时代表两个真实 QQ 账号。
 
+为兼容已经写入 NapCat 持久卷的旧部署，后端仍接受 `/webhooks/onebot/default` 并将其安全映射到
+唯一的内置 NapCat Bot；`init-napcat` 会在每次初始化时删除所有指向旧 OneBot Webhook 路径的
+客户端，只保留一个 `/webhooks/onebot` 上报客户端。若 NapCat 日志出现 HTTP 404，应先重新构建
+NeoQBot，并重新运行 `init-volumes` 以刷新持久化配置。
+
 ## 连接语义
 
 | 连接 | 建议使用场景 | 对当前 Runtime 的影响 |
