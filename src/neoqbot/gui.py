@@ -54,9 +54,30 @@ class UserPasswordResetPayload(BaseModel):
     password: str = Field(min_length=14, max_length=512)
 
 
+class BotIdentityChanges(BaseModel):
+    qq_created: list[str] = Field(default_factory=list, max_length=1000)
+    qq_deleted: list[str] = Field(default_factory=list, max_length=1000)
+    feishu_created: list[str] = Field(default_factory=list, max_length=1000)
+    feishu_deleted: list[str] = Field(default_factory=list, max_length=1000)
+
+
 class SettingsPayload(BaseModel):
     config: dict[str, Any]
     revision: str = Field(default="", max_length=64)
+    identity_changes: BotIdentityChanges = Field(default_factory=BotIdentityChanges)
+
+
+PLATFORM_SETTINGS_SECTIONS = {
+    "app",
+    "llm",
+    "join_approval",
+    "moderation",
+    "announcements",
+    "runtime",
+    "retention",
+    "gui",
+}
+ORCHESTRATION_SETTINGS_SECTIONS = {"qq", "feishu", "orchestration"}
 
 
 def _settings_revision(settings: Settings) -> str:
@@ -67,6 +88,69 @@ def _settings_revision(settings: Settings) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
+
+
+def _merge_settings_sections(
+    submitted: dict[str, Any], current: Settings, allowed_sections: set[str]
+) -> dict[str, Any]:
+    """Merge one GUI domain without allowing it to overwrite the other domain."""
+    candidate = current.model_dump(mode="json")
+    for section in allowed_sections:
+        if section in submitted:
+            candidate[section] = submitted[section]
+    return candidate
+
+
+def _redacted_settings_sections(settings: Settings, sections: set[str]) -> dict[str, Any]:
+    redacted = settings.redacted_dict()
+    return {section: redacted[section] for section in sections}
+
+
+def _validate_bot_identity_changes(
+    submitted: dict[str, Any], current: Settings, changes: BotIdentityChanges
+) -> None:
+    """Require Bot creation and deletion to be explicit; ordinary edits cannot rename IDs."""
+
+    def incoming_ids(section: str) -> set[str]:
+        value = submitted.get(section)
+        if not isinstance(value, dict) or not isinstance(value.get("bots"), list):
+            raise ValueError(f"{section}.bots 必须是列表")
+        return {str(bot.get("id", "")) for bot in value["bots"] if isinstance(bot, dict)}
+
+    platforms = (
+        (
+            "qq",
+            {bot.id for bot in current.effective_qq_bots()},
+            changes.qq_created,
+            changes.qq_deleted,
+        ),
+        (
+            "feishu",
+            {bot.id for bot in current.effective_feishu_bots()},
+            changes.feishu_created,
+            changes.feishu_deleted,
+        ),
+    )
+    for platform, current_ids, created_list, deleted_list in platforms:
+        created = set(created_list)
+        deleted = set(deleted_list)
+        if len(created) != len(created_list) or len(deleted) != len(deleted_list):
+            raise ValueError(f"{platform} Bot 身份变更清单不能包含重复 ID")
+        if created & deleted:
+            raise ValueError(f"{platform} Bot 不能在同一次保存中同时新增和删除同一 ID")
+        if created & current_ids:
+            raise ValueError(f"{platform} Bot 新增清单包含已存在的 ID")
+        if not deleted <= current_ids:
+            raise ValueError(f"{platform} Bot 删除清单包含不存在的 ID")
+        expected = (current_ids - deleted) | created
+        actual = incoming_ids(platform)
+        if actual != expected:
+            removed = sorted(current_ids - actual)
+            added = sorted(actual - current_ids)
+            raise ValueError(
+                f"{platform} Bot 内部 ID 不可直接修改；请使用资源编排的新增/删除操作"
+                f"（移除={removed}，新增={added}）"
+            )
 
 
 def _preserve_masked_secrets(candidate: dict[str, Any], current: Settings) -> dict[str, Any]:
@@ -122,12 +206,16 @@ def _preserve_masked_secrets(candidate: dict[str, Any], current: Settings) -> di
         for incoming in qq_section["bots"]:
             if not isinstance(incoming, dict):
                 continue
-            existing = current_bots.get(str(incoming.get("id", "")))
+            incoming_id = str(incoming.get("id", ""))
+            existing = current_bots.get(incoming_id)
             if existing is None:
                 if not sensitive_edits:
                     incoming["enabled"] = False
                     for key in locked_keys:
                         incoming[key] = safe_defaults[key]
+                    secret_root = f"data/secrets/qq/{incoming_id or 'new-bot'}"
+                    incoming["access_token_file"] = f"{secret_root}/onebot.token"
+                    incoming["webui_token_file"] = f"{secret_root}/webui.token"
                 continue
             for key in ("access_token", "webui_token", "webhook_secret"):
                 if incoming.get(key) in (None, "", "***"):
@@ -504,7 +592,7 @@ def register_gui(
     ) -> dict[str, Any]:
         settings = get_settings()
         return {
-            "config": settings.redacted_dict(),
+            "config": _redacted_settings_sections(settings, PLATFORM_SETTINGS_SECTIONS),
             "revision": _settings_revision(settings),
         }
 
@@ -531,7 +619,10 @@ def register_gui(
                 detail="配置已被其他会话更新，请刷新后重新应用更改",
             )
         try:
-            merged = _preserve_masked_secrets(payload.config, current)
+            candidate = _merge_settings_sections(
+                payload.config, current, PLATFORM_SETTINGS_SECTIONS
+            )
+            merged = _preserve_masked_secrets(candidate, current)
             updated = Settings.model_validate(merged)
         except Exception as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -548,6 +639,75 @@ def register_gui(
             "configuration",
             str(configuration_path),
             {"restart": restart_required},
+        )
+        return {
+            "ok": True,
+            "restart_required": restart_required,
+            "diagnostics": updated.diagnostics(),
+            "revision": _settings_revision(updated),
+        }
+
+    @app.get("/api/gui/orchestration")
+    async def gui_orchestration_settings(
+        _: GuiSession = Depends(ready_admin),
+    ) -> dict[str, Any]:
+        settings = get_settings()
+        return {
+            "config": _redacted_settings_sections(settings, ORCHESTRATION_SETTINGS_SECTIONS),
+            "revision": _settings_revision(settings),
+            "sensitive_edits_allowed": settings.gui.allow_sensitive_settings_edits,
+        }
+
+    @app.put("/api/gui/orchestration")
+    async def gui_save_orchestration(
+        payload: SettingsPayload,
+        session: GuiSession = Depends(ready_admin_csrf),
+    ) -> dict[str, Any]:
+        current = get_settings()
+        current_revision = _settings_revision(current)
+        if payload.revision and not secrets.compare_digest(payload.revision, current_revision):
+            get_container().database.audit(
+                "gui_orchestration",
+                "conflict",
+                "admin_user",
+                session.username,
+                {
+                    "submitted_revision": payload.revision[:12],
+                    "current_revision": current_revision[:12],
+                },
+            )
+            raise HTTPException(
+                status_code=409,
+                detail="配置已被其他会话更新，请刷新后重新应用更改",
+            )
+        try:
+            _validate_bot_identity_changes(payload.config, current, payload.identity_changes)
+            candidate = _merge_settings_sections(
+                payload.config, current, ORCHESTRATION_SETTINGS_SECTIONS
+            )
+            merged = _preserve_masked_secrets(candidate, current)
+            updated = Settings.model_validate(merged)
+        except Exception as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        try:
+            updated.save(configuration_path)
+            restart_required = await reload_settings(updated)
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"配置文件写入失败：{exc}") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"配置已写入，但热加载失败：{exc}") from exc
+        get_container().database.audit(
+            "gui_orchestration",
+            "saved",
+            "configuration",
+            str(configuration_path),
+            {
+                "restart": restart_required,
+                "qq_bots": len(updated.qq.bots),
+                "feishu_bots": len(updated.feishu.bots),
+                "resources": len(updated.orchestration.resources),
+                "edges": len(updated.orchestration.edges),
+            },
         )
         return {
             "ok": True,
@@ -834,6 +994,13 @@ def register_gui(
                     "assignment_count": len(get_settings().bot_group_ids(bot.id)),
                 }
             )
+        if not results:
+            return {
+                "bots": [],
+                "status": {"ok": True, "enabled": False, "reason": "no_bots"},
+                "webui_public_url": "",
+                "webui_public_port": None,
+            }
         primary = results[0]
         return {
             "bots": results,
@@ -861,7 +1028,14 @@ def register_gui(
             results.append(
                 {"id": bot.id, "name": bot.name, "enabled": bot.enabled, "status": status}
             )
-        return {"bots": results, "status": results[0]["status"]}
+        return {
+            "bots": results,
+            "status": (
+                results[0]["status"]
+                if results
+                else {"ok": True, "enabled": False, "reason": "no_bots"}
+            ),
+        }
 
     @app.post("/api/gui/integrations/feishu/{action}")
     async def gui_feishu_action(

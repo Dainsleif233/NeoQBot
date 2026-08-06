@@ -10,8 +10,8 @@ NeoQBot 把易变化的 IM/CLI 接口与稳定的治理流程分离。外部平�
 
 | 组件 | 职责 | 失败行为 |
 |---|---|---|
-| FastAPI Webhook | 校验 HMAC、限制大小、接收 OneBot 事件 | 拒绝非法请求；队列满返回 503 |
-| GUI | 6688 端口管理后台、配置热加载、平台登录和数据浏览 | 首次登录强制改密 |
+| FastAPI Webhook | 校验 HMAC、限制大小、按 Bot→群连接过滤 OneBot 事件 | 拒绝非法请求；未编排群不入队；队列满返回 503 |
+| GUI | 6688 端口管理后台、配置热加载、平台登录和数据浏览 | 首次登录强制改密；平台域与资源域独立保存 |
 | 编排工作台 | 管理 Bot、群、知识库节点、连接关系与画布布局 | 旧托管群配置自动映射为节点和连接 |
 | EventHandler | 标准化申请、群消息和管理员私聊 | 未知事件忽略 |
 | JoinApprovalService | 幂等申请、模型审核、阈值与动作状态机 | 转人工并审计 |
@@ -78,6 +78,8 @@ stateDiagram-v2
 
 - Bot 节点来自 `qq.bots` 与 `feishu.bots`，节点 ID 分别为 `qq-bot:<id>` 和
   `feishu-bot:<id>`；
+- QQ/飞书 Bot 账号只在编排工作台新增、删除和编辑；已有 Bot 的内部 ID 不可变，昵称与连接参数
+  在单节点中心弹窗内保存；
 - 群和知识库保存在 `orchestration.resources`，当前资源类型为 `qq_group`、
   `feishu_group` 和 `knowledge_base`；
 - 多对多连接保存在 `orchestration.edges`，可表达管理、监听、归档、检索和同步；
@@ -86,9 +88,13 @@ stateDiagram-v2
 - 节点坐标保存在 `orchestration.layout`，不影响 Runtime 行为；
 - 事件服务按收到的 `bot_id + group_id` 查找事务分工，定时器按连接分别调度，因此同一 Bot 在
   不同群可以使用不同周期、窗口、阈值和公告目标；
+- Webhook 在事件进入内存队列前完成同样的 `bot_id + group_id` 检查，未编排群事件不产生数据库
+  写入，运行时对普通忽略结果只记录 DEBUG；
 - 旧版 `managed_group_ids + bot.tasks` 在配置校验前自动迁移到资源与连接，保存后只保留新模型；
 - GUI 读取配置时获得基于完整有效配置生成的 SHA-256 修订号，保存时使用乐观并发校验；
   如果其他会话已修改配置，旧页面收到 409 而不会静默覆盖新设置；
+- `/api/gui/settings` 只合并平台设置域，`/api/gui/orchestration` 只合并 Bot、资源和连接域，后端
+  会保留另一领域的当前值，避免旧客户端或误操作重新制造双重配置入口；
 - 群详情通过受 GUI 会话保护的只读接口聚合 SQLite 中的消息、公告、分析和申请记录。
 
 ## 安全模型

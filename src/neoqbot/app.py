@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import logging
 import os
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -23,6 +24,8 @@ from .security import (
     RequestBodyLimitMiddleware,
     client_ip_allowed,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _verify_onebot_signature(body: bytes, signature: str | None, secret: str) -> bool:
@@ -247,6 +250,19 @@ def create_app(settings: Settings | None = None, config_path: str | Path | None 
             raise HTTPException(status_code=400, detail="Invalid JSON") from exc
         if not isinstance(event, dict):
             raise HTTPException(status_code=400, detail="Event must be a JSON object")
+        group_id = str(event.get("group_id") or "").strip()
+        if group_id and resolved_settings.qq_group_assignment(bot.id, group_id) is None:
+            logger.debug(
+                "Discarded OneBot event from unassigned group %s for bot %s",
+                group_id,
+                bot.id,
+            )
+            return {
+                "accepted": False,
+                "bot_id": bot.id,
+                "group_id": group_id,
+                "reason": "unmanaged_group",
+            }
         try:
             await container.runtime.submit(event, bot.id)
         except asyncio.QueueFull as exc:

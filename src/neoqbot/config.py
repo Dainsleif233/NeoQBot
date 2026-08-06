@@ -174,7 +174,6 @@ class QQBotConfig(QQConnectionConfig):
 class QQConfig(BaseModel):
     bots: list[QQBotConfig] = Field(
         default_factory=lambda: [QQBotConfig(id="default", name="默认 QQ Bot")],
-        min_length=1,
     )
 
     @model_validator(mode="after")
@@ -247,7 +246,6 @@ class FeishuBotConfig(FeishuConnectionConfig):
 class FeishuConfig(BaseModel):
     bots: list[FeishuBotConfig] = Field(
         default_factory=lambda: [FeishuBotConfig(id="default", name="默认飞书 Bot", enabled=False)],
-        min_length=1,
     )
 
     @model_validator(mode="after")
@@ -685,13 +683,22 @@ class Settings(BaseSettings):
             if not self.llm.model or self.llm.model.startswith("replace-with"):
                 errors.append("llm.model 仍是占位值")
         feishu_bots = self.effective_feishu_bots()
-        default_feishu = next((bot for bot in feishu_bots if bot.enabled), feishu_bots[0])
+        default_feishu = next(
+            (bot for bot in feishu_bots if bot.enabled),
+            feishu_bots[0] if feishu_bots else None,
+        )
         archive_targets = {
-            assignment.tasks.announcement_sync.feishu_bot_id or default_feishu.id
+            assignment.tasks.announcement_sync.feishu_bot_id
+            or (default_feishu.id if default_feishu else "")
             for assignment in assignments
             if assignment.tasks.announcement_sync.enabled
         }
-        search_targets = {bot.search_feishu_bot_id or default_feishu.id for bot in qq_bots}
+        archive_targets.discard("")
+        search_targets = {
+            bot.search_feishu_bot_id or (default_feishu.id if default_feishu else "")
+            for bot in qq_bots
+        }
+        search_targets.discard("")
         for bot in feishu_bots:
             if not bot.enabled:
                 continue

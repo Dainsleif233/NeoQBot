@@ -13,6 +13,17 @@ from .recording import LocalMessageRecorder
 from .services import AnnouncementService, ModerationService
 
 logger = logging.getLogger(__name__)
+QUIET_EVENT_RESULTS = frozenset(
+    {
+        "ignored",
+        "unknown_bot",
+        "unmanaged_group",
+        "disabled",
+        "duplicate",
+        "unauthorized",
+        "not_a_search",
+    }
+)
 
 
 class Runtime:
@@ -96,7 +107,8 @@ class Runtime:
             bot_id, event = await self.queue.get()
             try:
                 result = await self.event_handler.handle(event, bot_id)
-                logger.info("OneBot event handled by %s: %s", bot_id, result)
+                log = logger.debug if result in QUIET_EVENT_RESULTS else logger.info
+                log("OneBot event handled by %s: %s", bot_id, result)
             except Exception:
                 logger.exception("Unhandled OneBot event failure")
             finally:

@@ -7,7 +7,7 @@
   <title>NeoQBot 管理中心</title>
   <link rel="icon" type="image/png" href="/gui/assets/img/neoqbot-logo.png">
   <link rel="apple-touch-icon" href="/gui/assets/img/neoqbot-logo.png">
-  <link rel="stylesheet" href="/gui/assets/app.css?v=20260805-2">
+  <link rel="stylesheet" href="/gui/assets/app.css?v=20260805-3">
 </head>
 <body>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
@@ -185,6 +185,15 @@
           <button type="button" data-create-kind="knowledge_base"><span>▤</span><div><strong>知识库</strong><small>飞书或外部知识资源</small></div></button>
         </div>
 
+        <div id="orchestration-node-menu" class="context-menu hidden" role="menu">
+          <div id="orchestration-node-menu-label" class="context-menu-label">节点</div>
+          <button type="button" data-node-action="edit"><span>✎</span><div><strong>详细编辑</strong><small>在当前页面打开中心配置窗口</small></div></button>
+          <button type="button" data-node-action="focus"><span>◎</span><div><strong>定位节点</strong><small>选中并将节点移动到视野中心</small></div></button>
+          <button type="button" data-node-action="toggle"><span>◐</span><div><strong>启用 / 停用</strong><small>保留节点、连接和全部配置</small></div></button>
+          <div class="context-menu-separator"></div>
+          <button type="button" class="danger-action" data-node-action="delete"><span>×</span><div><strong>删除节点</strong><small>同时移除与它相连的连接</small></div></button>
+        </div>
+
         <dialog id="qq-login-dialog" class="login-dialog">
           <div class="login-dialog-layout">
             <aside class="login-guide">
@@ -207,6 +216,15 @@
             </section>
           </div>
         </dialog>
+
+        <dialog id="node-detail-dialog" class="form-dialog node-detail-dialog">
+          <form id="node-detail-form">
+            <header><div><p id="node-detail-kicker" class="eyebrow">Node configuration</p><h2 id="node-detail-title">配置节点</h2></div><button id="node-detail-close" class="icon-button" type="button" aria-label="关闭">×</button></header>
+            <p id="node-detail-intro" class="muted"></p>
+            <div id="node-detail-body" class="node-detail-body"></div>
+            <footer class="button-row"><button id="node-detail-cancel" class="button ghost" type="button">取消</button><button id="node-detail-save" class="button primary" type="submit">保存并应用</button></footer>
+          </form>
+        </dialog>
       </section>
 
       <section id="view-settings" class="view">
@@ -214,26 +232,16 @@
           <aside class="settings-progress" aria-label="设置进度">
             <div class="progress-intro"><p class="eyebrow">Configuration</p><strong>分步完成设置</strong><small>每一步只处理一类信息，最后统一保存。</small></div>
             <nav>
-              <button type="button" class="settings-step active" data-section="qq"><span>01</span><div><strong>QQ 账号</strong><small>连接与登录入口</small></div></button>
-              <button type="button" class="settings-step" data-section="feishu"><span>02</span><div><strong>飞书账号</strong><small>归档与搜索</small></div></button>
-              <button type="button" class="settings-step" data-section="llm"><span>03</span><div><strong>大模型</strong><small>模型连接参数</small></div></button>
-              <button type="button" class="settings-step" data-section="policy"><span>04</span><div><strong>判断策略</strong><small>规则与政策文本</small></div></button>
-              <button type="button" class="settings-step" data-section="storage"><span>05</span><div><strong>存储保留</strong><small>本地记录与清理</small></div></button>
-              <button type="button" class="settings-step" data-section="system"><span>06</span><div><strong>系统安全</strong><small>环境与访问控制</small></div></button>
-              <button type="button" class="settings-step" data-section="review"><span>07</span><div><strong>检查应用</strong><small>确认并保存</small></div></button>
+              <button type="button" class="settings-step active" data-section="llm"><span>01</span><div><strong>大模型</strong><small>模型连接参数</small></div></button>
+              <button type="button" class="settings-step" data-section="policy"><span>02</span><div><strong>判断策略</strong><small>规则与政策文本</small></div></button>
+              <button type="button" class="settings-step" data-section="storage"><span>03</span><div><strong>存储保留</strong><small>本地记录与清理</small></div></button>
+              <button type="button" class="settings-step" data-section="system"><span>04</span><div><strong>系统安全</strong><small>环境与访问控制</small></div></button>
+              <button type="button" class="settings-step" data-section="review"><span>05</span><div><strong>检查应用</strong><small>确认并保存</small></div></button>
             </nav>
           </aside>
           <div class="settings-workspace">
-            <section class="settings-section active" data-settings-section="qq">
-              <div class="section-title split-title"><div><p class="eyebrow">Step 01 · QQ accounts</p><h2>QQ 账号与连接</h2><p class="muted">这里只设置账号连接与管理员；群归属和具体事务统一在资源编排中逐群配置。</p></div><button id="add-qq-bot" class="button secondary" type="button">添加 QQ Bot</button></div>
-              <div id="qq-bot-editor" class="bot-editor-list"></div>
-            </section>
-            <section class="settings-section" data-settings-section="feishu">
-              <div class="section-title split-title"><div><p class="eyebrow">Step 02 · Feishu accounts</p><h2>飞书账号</h2><p class="muted">为公告归档和管理员搜索准备独立 CLI 登录态。</p></div><button id="add-feishu-bot" class="button secondary" type="button">添加飞书 Bot</button></div>
-              <div id="feishu-bot-editor" class="bot-editor-list"></div>
-            </section>
-            <section class="settings-section" data-settings-section="llm">
-              <div class="section-title"><p class="eyebrow">Step 03 · Agnes AI</p><h2>大模型连接</h2><p class="muted">只负责结构化判断；纯记录模式无需配置模型。</p></div>
+            <section class="settings-section active" data-settings-section="llm">
+              <div class="section-title"><p class="eyebrow">Step 01 · Agnes AI</p><h2>大模型连接</h2><p class="muted">只负责平台级结构化判断；Bot 账号与连接统一在资源编排中维护。</p></div>
               <div class="form-grid">
                 <label>驱动<select id="cfg-llm-driver"><option value="rules">离线规则</option><option value="openai_compatible">OpenAI 兼容</option></select></label>
                 <label>模型名称<input id="cfg-llm-model"></label>
@@ -245,7 +253,7 @@
               </div>
             </section>
             <section class="settings-section" data-settings-section="policy">
-              <div class="section-title"><p class="eyebrow">Step 04 · Shared policy</p><h2>共享判断策略</h2><p class="muted">这里维护所有 Bot 共用的判断文本与离线规则。</p></div>
+              <div class="section-title"><p class="eyebrow">Step 02 · Shared policy</p><h2>共享判断策略</h2><p class="muted">这里维护所有 Bot 共用的平台判断文本与离线规则。</p></div>
               <div class="form-grid">
                 <label class="span-2">入群必要关键词<textarea id="cfg-required-keywords" rows="2"></textarea></label>
                 <label class="span-2">入群禁止关键词<textarea id="cfg-forbidden-keywords" rows="2"></textarea></label>
@@ -255,7 +263,7 @@
               </div>
             </section>
             <section class="settings-section" data-settings-section="storage">
-              <div class="section-title"><p class="eyebrow">Step 05 · Storage</p><h2>本地记录与数据保留</h2><p class="muted">SQLite 用于管理后台查询；开启“纯记录”后，原始消息还会按日写入挂载卷中的 JSONL。</p></div>
+              <div class="section-title"><p class="eyebrow">Step 03 · Storage</p><h2>本地记录与数据保留</h2><p class="muted">SQLite 用于管理后台查询；连接上的“纯记录”事务会把原始消息按日写入挂载卷中的 JSONL。</p></div>
               <div class="form-grid">
                 <label class="span-2">群消息归档目录<input id="cfg-message-archive-path" placeholder="data/group-message-records"><small>Docker 默认映射到 /app/data/group-message-records</small></label>
                 <label class="switch-field span-2"><span><strong>启用每日清理</strong><small>公告版本不会自动删除</small></span><input id="cfg-retention-enabled" type="checkbox"></label>
@@ -266,7 +274,7 @@
               </div>
             </section>
             <section class="settings-section" data-settings-section="system">
-              <div class="section-title"><p class="eyebrow">Step 06 · System</p><h2>系统与安全</h2></div>
+              <div class="section-title"><p class="eyebrow">Step 04 · System</p><h2>系统与安全</h2></div>
               <div class="form-grid">
                 <label>环境名称<input id="cfg-environment"></label>
                 <label>日志级别<select id="cfg-log-level"><option>DEBUG</option><option>INFO</option><option>WARNING</option><option>ERROR</option></select></label>
@@ -276,7 +284,7 @@
               </div>
             </section>
             <section class="settings-section" data-settings-section="review">
-              <div class="section-title"><p class="eyebrow">Step 07 · Review</p><h2>检查并应用</h2><p class="muted">保存后配置会立即校验并热加载；监听地址或端口变更仍需重启。</p></div>
+              <div class="section-title"><p class="eyebrow">Step 05 · Review</p><h2>检查并应用</h2><p class="muted">这里只应用平台配置；Bot、群、连接和群级事务不会被系统设置改写。</p></div>
               <div id="settings-review" class="review-grid"></div>
               <div class="review-notice"><strong>应用前检查</strong><span>建议首次联调保持“安全演练”开启，并确认 QQ 登录状态与挂载卷权限。</span></div>
             </section>
@@ -389,6 +397,6 @@
     <footer><span><kbd>↑</kbd><kbd>↓</kbd> 选择</span><span><kbd>Enter</kbd> 执行</span><span><kbd>Esc</kbd> 关闭</span></footer>
   </dialog>
 
-  <script src="/gui/assets/app.js?v=20260805-2" defer></script>
+  <script src="/gui/assets/app.js?v=20260805-4" defer></script>
 </body>
 </html>

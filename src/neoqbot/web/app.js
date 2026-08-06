@@ -14,7 +14,7 @@
     qqLoginPolling: false,
     qqQrRefreshing: false,
     qqQrLastRefresh: 0,
-    settingsStep: "qq",
+    settingsStep: "llm",
     settingsDirty: false,
     orchestrationNodes: [],
     orchestrationEdges: [],
@@ -25,6 +25,10 @@
     orchestrationConnect: null,
     orchestrationSearch: "",
     orchestrationStatuses: { qq: [], feishu: [] },
+    orchestrationSensitiveEditsAllowed: false,
+    orchestrationIdentityChanges: { qq_created: [], qq_deleted: [], feishu_created: [], feishu_deleted: [] },
+    orchestrationContextNodeId: "",
+    nodeDialog: null,
     recordsOffset: 0,
     recordsHasMore: false,
     recordsSearchTimer: null,
@@ -710,51 +714,6 @@
     return edge.source.indexOf("qq-bot:") === 0 && resource && resource.kind === "qq_group" && ["manages", "observes"].indexOf(edge.relation) >= 0;
   }
 
-  function managedGroupIdsForBot(botId) {
-    return state.orchestrationEdges.filter(function (edge) {
-      return edge.enabled && edge.source === "qq-bot:" + botId && isQQGroupAssignment(edge);
-    }).map(function (edge) { return graphResource(edge.target).external_id; }).filter(Boolean);
-  }
-
-  function removeBotFromOrchestration(kind, botId) {
-    if (!state.config.orchestration) return;
-    var nodeId = kind + ":" + botId;
-    state.config.orchestration.edges = (state.config.orchestration.edges || []).filter(function (edge) {
-      return edge.source !== nodeId && edge.target !== nodeId;
-    });
-    if (state.config.orchestration.layout) delete state.config.orchestration.layout[nodeId];
-    if (kind === "feishu-bot") {
-      (state.config.qq.bots || []).forEach(function (bot) {
-        if (bot.search_feishu_bot_id === botId) bot.search_feishu_bot_id = "";
-      });
-      (state.config.orchestration.edges || []).forEach(function (edge) {
-        if (edge.tasks && edge.tasks.announcement_sync && edge.tasks.announcement_sync.feishu_bot_id === botId) edge.tasks.announcement_sync.feishu_bot_id = "";
-      });
-    }
-  }
-
-  function renameBotInOrchestration(kind, previousId, nextId) {
-    if (!state.config.orchestration || previousId === nextId) return;
-    var previousNodeId = kind + ":" + previousId;
-    var nextNodeId = kind + ":" + nextId;
-    (state.config.orchestration.edges || []).forEach(function (edge) {
-      if (edge.source === previousNodeId) edge.source = nextNodeId;
-      if (edge.target === previousNodeId) edge.target = nextNodeId;
-    });
-    if (state.config.orchestration.layout && state.config.orchestration.layout[previousNodeId]) {
-      state.config.orchestration.layout[nextNodeId] = state.config.orchestration.layout[previousNodeId];
-      delete state.config.orchestration.layout[previousNodeId];
-    }
-    if (kind === "feishu-bot") {
-      (state.config.qq.bots || []).forEach(function (bot) {
-        if (bot.search_feishu_bot_id === previousId) bot.search_feishu_bot_id = nextId;
-      });
-      (state.config.orchestration.edges || []).forEach(function (edge) {
-        if (edge.tasks && edge.tasks.announcement_sync && edge.tasks.announcement_sync.feishu_bot_id === previousId) edge.tasks.announcement_sync.feishu_bot_id = nextId;
-      });
-    }
-  }
-
   function defaultNodePosition(kind, index) {
     var columns = { qq_bot: 80, feishu_bot: 80, qq_group: 430, feishu_group: 430, knowledge_base: 790 };
     var laneOffset = kind === "feishu_bot" || kind === "feishu_group" ? 300 : 70;
@@ -903,6 +862,15 @@
         renderOrchestration();
         renderOrchestrationInspector(node.id);
       });
+      card.addEventListener("contextmenu", function (event) {
+        event.preventDefault();
+        event.stopPropagation();
+        state.orchestrationSelected = node.id;
+        state.orchestrationContextNodeId = node.id;
+        renderOrchestration();
+        renderOrchestrationInspector(node.id);
+        showNodeContextMenu(node, event.clientX, event.clientY);
+      });
       card.addEventListener("pointerdown", function (event) {
         if (event.button !== 0 || event.target.closest("button, input, textarea, select")) return;
         state.orchestrationDrag = { id: node.id, startX: event.clientX, startY: event.clientY, x: position.x, y: position.y, moved: false };
@@ -950,6 +918,19 @@
     $("orchestration-save").disabled = false;
   }
 
+  function recordBotIdentityChange(platform, action, botId) {
+    var createdKey = platform + "_created";
+    var deletedKey = platform + "_deleted";
+    var changes = state.orchestrationIdentityChanges;
+    if (action === "created") {
+      if (changes[deletedKey].indexOf(botId) >= 0) {
+        changes[deletedKey] = changes[deletedKey].filter(function (id) { return id !== botId; });
+      } else if (changes[createdKey].indexOf(botId) < 0) changes[createdKey].push(botId);
+    } else if (changes[createdKey].indexOf(botId) >= 0) {
+      changes[createdKey] = changes[createdKey].filter(function (id) { return id !== botId; });
+    } else if (changes[deletedKey].indexOf(botId) < 0) changes[deletedKey].push(botId);
+  }
+
   function syncOrchestrationToBots() {
     state.config.qq.bots.forEach(function (bot) {
       var nodeId = "qq-bot:" + bot.id;
@@ -963,8 +944,6 @@
       if (!isQQGroupAssignment(edge) && edge.tasks) delete edge.tasks;
     });
     state.config.orchestration.edges = state.orchestrationEdges;
-    state.config.qq.enabled = state.config.qq.bots.some(function (bot) { return bot.enabled; });
-    state.config.feishu.enabled = state.config.feishu.bots.some(function (bot) { return bot.enabled; });
   }
 
   function statusForNode(node) {
@@ -1256,10 +1235,7 @@
           integrationButton("退出", function () { feishuAction(node.ref.id, "logout", this, output); })
         );
       }
-      var configure = integrationButton("打开完整设置", function () {
-        state.settingsStep = node.kind === "qq_bot" ? "qq" : "feishu";
-        switchView("settings");
-      });
+      var configure = integrationButton("详细配置", function () { openNodeDetail(node.id); });
       actions.append(configure);
       statusSection.append(output, actions);
       content.appendChild(statusSection);
@@ -1338,16 +1314,26 @@
   async function deleteSelectedOrchestrationNode() {
     var node = graphNode(state.orchestrationSelected);
     if (!node) return;
-    if (node.kind === "qq_bot" && state.config.qq.bots.length <= 1) return showToast("至少保留一个 QQ Bot，可将其停用", true);
-    if (node.kind === "feishu_bot" && state.config.feishu.bots.length <= 1) return showToast("至少保留一个飞书 Bot，可将其停用", true);
     if (!await confirmAction({
       title: "删除编排资源？",
       message: "将删除“" + node.name + "”及其所有连接。更改将在保存编排后生效。",
       confirmText: "删除资源",
       danger: true
     })) return;
-    if (node.kind === "qq_bot") state.config.qq.bots = state.config.qq.bots.filter(function (bot) { return "qq-bot:" + bot.id !== node.id; });
-    else if (node.kind === "feishu_bot") state.config.feishu.bots = state.config.feishu.bots.filter(function (bot) { return "feishu-bot:" + bot.id !== node.id; });
+    if (node.kind === "qq_bot") {
+      recordBotIdentityChange("qq", "deleted", node.ref.id);
+      state.config.qq.bots = state.config.qq.bots.filter(function (bot) { return "qq-bot:" + bot.id !== node.id; });
+    }
+    else if (node.kind === "feishu_bot") {
+      recordBotIdentityChange("feishu", "deleted", node.ref.id);
+      state.config.feishu.bots = state.config.feishu.bots.filter(function (bot) { return "feishu-bot:" + bot.id !== node.id; });
+      state.config.qq.bots.forEach(function (bot) {
+        if (bot.search_feishu_bot_id === node.ref.id) bot.search_feishu_bot_id = "";
+      });
+      state.config.orchestration.edges.forEach(function (edge) {
+        if (edge.tasks && edge.tasks.announcement_sync && edge.tasks.announcement_sync.feishu_bot_id === node.ref.id) edge.tasks.announcement_sync.feishu_bot_id = "";
+      });
+    }
     else state.config.orchestration.resources = state.config.orchestration.resources.filter(function (resource) { return resource.id !== node.id; });
     state.config.orchestration.edges = state.config.orchestration.edges.filter(function (edge) { return edge.source !== node.id && edge.target !== node.id; });
     delete state.config.orchestration.layout[node.id];
@@ -1359,41 +1345,8 @@
   }
 
   function createOrchestrationNode(kind) {
-    var point = state.orchestrationMenuPoint;
-    if (kind === "qq_bot") {
-      var qq = defaultQQBot(state.config.qq.bots.length);
-      qq.id = uniqueIdentifier("qq-bot-" + (state.config.qq.bots.length + 1), state.config.qq.bots.map(function (bot) { return bot.id; }));
-      qq.name = "新 QQ Bot";
-      state.config.qq.bots.push(qq);
-      state.config.orchestration.layout["qq-bot:" + qq.id] = point;
-      state.orchestrationSelected = "qq-bot:" + qq.id;
-    } else if (kind === "feishu_bot") {
-      var fs = defaultFeishuBot(state.config.feishu.bots.length);
-      fs.id = uniqueIdentifier("feishu-bot-" + (state.config.feishu.bots.length + 1), state.config.feishu.bots.map(function (bot) { return bot.id; }));
-      fs.name = "新飞书 Bot";
-      state.config.feishu.bots.push(fs);
-      state.config.orchestration.layout["feishu-bot:" + fs.id] = point;
-      state.orchestrationSelected = "feishu-bot:" + fs.id;
-    } else {
-      var labels = { qq_group: "新 QQ 群", feishu_group: "新飞书群", knowledge_base: "新知识库" };
-      var resource = {
-        id: uniqueIdentifier(kind.replace("_", "-") + "-1", state.config.orchestration.resources.map(function (item) { return item.id; })),
-        kind: kind,
-        name: labels[kind],
-        external_id: "",
-        description: "",
-        enabled: true,
-        metadata: {}
-      };
-      state.config.orchestration.resources.push(resource);
-      state.config.orchestration.layout[resource.id] = point;
-      state.orchestrationSelected = resource.id;
-    }
-    normalizeOrchestration(state.config);
-    markOrchestrationDirty();
-    renderOrchestration();
-    renderOrchestrationInspector(state.orchestrationSelected);
     $("orchestration-menu").classList.add("hidden");
+    openNodeDetail("", kind, state.orchestrationMenuPoint);
   }
 
   function autoLayoutOrchestration() {
@@ -1421,37 +1374,60 @@
     $("orchestration-state").textContent = "正在校验并热加载…";
     try {
       syncOrchestrationToBots();
-      var result = await api("/api/gui/settings", {
+      var result = await api("/api/gui/orchestration", {
         method: "PUT",
-        body: { config: state.config, revision: state.settingsRevision }
+        body: {
+          config: state.config,
+          revision: state.settingsRevision,
+          identity_changes: clone(state.orchestrationIdentityChanges)
+        }
       });
       state.settingsRevision = result.revision || state.settingsRevision;
       state.orchestrationDirty = false;
       $("orchestration-state").textContent = result.restart_required.length ? "已保存，部分连接参数需重启" : "配置已同步";
       showToast("编排已保存并应用");
       await loadOrchestration();
+      return true;
     } catch (error) {
       $("orchestration-state").textContent = error.status === 409 ? "检测到配置冲突，请刷新后重试" : "保存失败";
       showToast(error.message, true);
       button.disabled = false;
+      return false;
     }
   }
 
   async function loadOrchestration() {
-    var settings = await api("/api/gui/settings");
+    var settings = await api("/api/gui/orchestration");
     state.config = settings.config;
     state.settingsRevision = settings.revision || "";
+    state.orchestrationSensitiveEditsAllowed = Boolean(settings.sensitive_edits_allowed);
+    state.orchestrationIdentityChanges = { qq_created: [], qq_deleted: [], feishu_created: [], feishu_deleted: [] };
+    state.orchestrationStatuses = { qq: [], feishu: [] };
     normalizeOrchestration(state.config);
     state.orchestrationDirty = false;
     $("orchestration-state").textContent = "配置已同步";
     $("orchestration-save").disabled = true;
     renderOrchestration();
     if (state.orchestrationSelected && graphNode(state.orchestrationSelected)) renderOrchestrationInspector(state.orchestrationSelected);
+    refreshOrchestrationStatuses();
+  }
+
+  async function refreshOrchestrationStatuses() {
     var statuses = await Promise.allSettled([api("/api/gui/integrations/qq"), api("/api/gui/integrations/feishu")]);
     state.orchestrationStatuses.qq = statuses[0].status === "fulfilled" ? statuses[0].value.bots || [] : [];
     state.orchestrationStatuses.feishu = statuses[1].status === "fulfilled" ? statuses[1].value.bots || [] : [];
+    if (state.activeView !== "integrations" || !state.config || !state.config.orchestration) return;
     renderOrchestration();
     if (state.orchestrationSelected) renderOrchestrationInspector(state.orchestrationSelected);
+  }
+
+  function showNodeContextMenu(node, clientX, clientY) {
+    var menu = $("orchestration-node-menu");
+    $("orchestration-menu").classList.add("hidden");
+    $("orchestration-node-menu-label").textContent = nodeKindLabel(node.kind) + " · " + node.name;
+    menu.style.left = Math.min(clientX, window.innerWidth - 250) + "px";
+    menu.style.top = Math.min(clientY, window.innerHeight - 300) + "px";
+    menu.classList.remove("hidden");
   }
 
   $("orchestration-canvas").addEventListener("contextmenu", function (event) {
@@ -1459,6 +1435,7 @@
     event.preventDefault();
     state.orchestrationMenuPoint = canvasPoint(event.clientX, event.clientY);
     var menu = $("orchestration-menu");
+    $("orchestration-node-menu").classList.add("hidden");
     menu.style.left = Math.min(event.clientX, window.innerWidth - 250) + "px";
     menu.style.top = Math.min(event.clientY, window.innerHeight - 340) + "px";
     menu.classList.remove("hidden");
@@ -1477,6 +1454,24 @@
   });
   document.addEventListener("pointerdown", function (event) {
     if (!event.target.closest("#orchestration-menu, #orchestration-add")) $("orchestration-menu").classList.add("hidden");
+    if (!event.target.closest("#orchestration-node-menu")) $("orchestration-node-menu").classList.add("hidden");
+  });
+  document.querySelectorAll("[data-node-action]").forEach(function (button) {
+    button.addEventListener("click", function () {
+      var node = graphNode(state.orchestrationContextNodeId);
+      $("orchestration-node-menu").classList.add("hidden");
+      if (!node) return;
+      if (button.dataset.nodeAction === "edit") openNodeDetail(node.id);
+      if (button.dataset.nodeAction === "focus") focusOrchestrationNode(node.id);
+      if (button.dataset.nodeAction === "toggle") {
+        node.ref.enabled = !node.ref.enabled;
+        node.enabled = node.ref.enabled;
+        markOrchestrationDirty();
+        renderOrchestration();
+        renderOrchestrationInspector(node.id);
+      }
+      if (button.dataset.nodeAction === "delete") deleteSelectedOrchestrationNode();
+    });
   });
   window.addEventListener("pointermove", function (event) {
     if (state.orchestrationDrag) {
@@ -1522,7 +1517,10 @@
   });
   window.addEventListener("resize", function () { if (state.activeView === "integrations") renderOrchestrationEdges(); });
   document.addEventListener("keydown", function (event) {
-    if (event.key === "Escape") $("orchestration-menu").classList.add("hidden");
+    if (event.key === "Escape") {
+      $("orchestration-menu").classList.add("hidden");
+      $("orchestration-node-menu").classList.add("hidden");
+    }
     if (state.activeView !== "integrations" || !state.orchestrationSelected || /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName)) return;
     if (event.key === "Delete" || event.key === "Backspace") deleteSelectedOrchestrationNode();
   });
@@ -1575,7 +1573,7 @@
     closeQQLogin();
   });
 
-  var settingsSteps = ["qq", "feishu", "llm", "policy", "storage", "system", "review"];
+  var settingsSteps = ["llm", "policy", "storage", "system", "review"];
 
   function markSettingsDirty() {
     state.settingsDirty = true;
@@ -1615,19 +1613,21 @@
     activateSettingsStep(settingsSteps[Math.min(settingsSteps.length - 1, index + 1)]);
   });
 
-  function defaultQQBot(index) {
+  function defaultQQBot(index, requestedId) {
+    var botId = requestedId || "qq-bot-" + (index + 1);
+    var secretRoot = "/app/data/secrets/qq/" + botId;
     return {
-      id: "qq-bot-" + (index + 1),
+      id: botId,
       name: "QQ Bot " + (index + 1),
       enabled: false,
       onebot_base_url: "http://qq-bridge:3000",
       access_token: "",
-      access_token_file: "/app/data/secrets/napcat-onebot.token",
+      access_token_file: secretRoot + "/onebot.token",
       webhook_secret: "",
       request_timeout_seconds: 15,
       webui_base_url: "http://qq-bridge:6099",
       webui_token: "",
-      webui_token_file: "/app/data/secrets/napcat-webui.token",
+      webui_token_file: secretRoot + "/webui.token",
       webui_public_url: "",
       webui_public_port: 6099,
       qrcode_path: "/app/napcat-cache/qrcode.png",
@@ -1669,6 +1669,286 @@
     if (c === state.config) state.orchestrationEdges = c.orchestration.edges;
   }
 
+  function nodeDetailControl(name) {
+    return $("node-detail-body").querySelector('[data-node-field="' + name + '"]');
+  }
+
+  function setNodeDetailValue(name, value) {
+    var control = nodeDetailControl(name);
+    if (!control) return;
+    if (control.type === "checkbox") control.checked = Boolean(value);
+    else control.value = value == null ? "" : value;
+  }
+
+  function syncNewQQSecretPaths(nextBotId) {
+    var dialogState = state.nodeDialog;
+    if (!dialogState || dialogState.mode !== "create" || dialogState.kind !== "qq_bot") return;
+    var previousBotId = dialogState.autoSecretBotId || dialogState.draft.id;
+    var previousRoot = "/app/data/secrets/qq/" + previousBotId;
+    var nextRoot = "/app/data/secrets/qq/" + nextBotId;
+    var accessTokenFile = nodeDetailControl("access_token_file");
+    var webuiTokenFile = nodeDetailControl("webui_token_file");
+    if (accessTokenFile.value.trim() === previousRoot + "/onebot.token") {
+      accessTokenFile.value = nextRoot + "/onebot.token";
+    }
+    if (webuiTokenFile.value.trim() === previousRoot + "/webui.token") {
+      webuiTokenFile.value = nextRoot + "/webui.token";
+    }
+    dialogState.autoSecretBotId = nextBotId;
+  }
+
+  function newNodeDraft(kind) {
+    if (kind === "qq_bot") {
+      var qqId = uniqueIdentifier("qq-bot-" + (state.config.qq.bots.length + 1), state.config.qq.bots.map(function (bot) { return bot.id; }));
+      var qq = defaultQQBot(state.config.qq.bots.length, qqId);
+      qq.name = "新 QQ Bot";
+      return qq;
+    }
+    if (kind === "feishu_bot") {
+      var fs = defaultFeishuBot(state.config.feishu.bots.length);
+      fs.id = uniqueIdentifier("feishu-bot-" + (state.config.feishu.bots.length + 1), state.config.feishu.bots.map(function (bot) { return bot.id; }));
+      fs.name = "新飞书 Bot";
+      return fs;
+    }
+    var labels = { qq_group: "新 QQ 群", feishu_group: "新飞书群", knowledge_base: "新知识库" };
+    return {
+      id: uniqueIdentifier(kind.replace("_", "-") + "-1", state.config.orchestration.resources.map(function (item) { return item.id; })),
+      kind: kind,
+      name: labels[kind],
+      external_id: "",
+      description: "",
+      enabled: true,
+      metadata: {}
+    };
+  }
+
+  function nodeDetailCommonHtml(existing) {
+    return [
+      '<section class="node-detail-section"><div class="node-detail-section-title"><span>Identity</span><h3>节点身份</h3></div><div class="form-grid">',
+      '<label>内部 ID<input data-node-field="id" pattern="[A-Za-z0-9_-]+" maxlength="64" required ' + (existing ? "readonly" : "") + '><small>' + (existing ? "已创建节点的内部 ID 不可修改，它绑定 Webhook、Secret 与登录身份。" : "创建后不可修改；仅允许字母、数字、下划线和连字符。") + '</small></label>',
+      '<label>显示名称<input data-node-field="name" maxlength="80" required></label>',
+      '<label class="switch-field span-2"><span><strong>启用节点</strong><small>停用会保留配置和连接，但不会执行任务。</small></span><input data-node-field="enabled" type="checkbox"></label>',
+      '</div></section>'
+    ].join("");
+  }
+
+  function qqNodeDetailHtml(existing) {
+    return nodeDetailCommonHtml(existing) + [
+      '<section class="node-detail-section"><div class="node-detail-section-title"><span>OneBot 11</span><h3>QQ 连接</h3></div><div class="form-grid">',
+      '<label class="span-2">OneBot Base URL<input data-node-field="onebot_base_url" data-sensitive></label>',
+      '<label>Access Token<input data-node-field="access_token" data-sensitive type="password" placeholder="留空保持原值"></label>',
+      '<label>Token 文件<input data-node-field="access_token_file" data-sensitive></label>',
+      '<label>Webhook Secret<input data-node-field="webhook_secret" data-sensitive type="password" placeholder="留空保持原值"></label>',
+      '<label>请求超时（秒）<input data-node-field="request_timeout_seconds" data-sensitive type="number" min="0.1" step="0.1"></label>',
+      '<label class="span-2">管理员 QQ（每行一个）<textarea data-node-field="administrator_qq_ids" rows="3"></textarea></label>',
+      '</div></section>',
+      '<section class="node-detail-section"><div class="node-detail-section-title"><span>NapCat</span><h3>登录与 WebUI</h3></div><div class="form-grid">',
+      '<label class="span-2">WebUI Base URL<input data-node-field="webui_base_url" data-sensitive></label>',
+      '<label>WebUI Token<input data-node-field="webui_token" data-sensitive type="password" placeholder="留空保持原值"></label>',
+      '<label>WebUI Token 文件<input data-node-field="webui_token_file" data-sensitive></label>',
+      '<label>公开访问地址<input data-node-field="webui_public_url" data-sensitive placeholder="https://..."></label>',
+      '<label>公开端口<input data-node-field="webui_public_port" data-sensitive type="number" min="1" max="65535"></label>',
+      '<label class="span-2">二维码路径<input data-node-field="qrcode_path" data-sensitive></label>',
+      '</div></section>',
+      '<section class="node-detail-section"><div class="node-detail-section-title"><span>Capabilities</span><h3>账号能力</h3></div><div class="form-grid">',
+      '<label class="span-2">公告动作（每行一个）<textarea data-node-field="announcement_actions" data-sensitive rows="3"></textarea></label>',
+      '<label class="span-2">默认搜索飞书 Bot<select data-node-field="search_feishu_bot_id"><option value="">不指定</option></select><small>群级公告归档目标仍以 Bot→群连接上的事务设置为准。</small></label>',
+      '</div></section>'
+    ].join("");
+  }
+
+  function feishuNodeDetailHtml(existing) {
+    return nodeDetailCommonHtml(existing) + [
+      '<section class="node-detail-section"><div class="node-detail-section-title"><span>Feishu CLI</span><h3>账号连接</h3></div><div class="form-grid">',
+      '<label>驱动<select data-node-field="driver" data-sensitive><option value="cli">CLI</option><option value="disabled">Disabled</option></select></label>',
+      '<label>可执行文件<input data-node-field="executable" data-sensitive></label>',
+      '<label>超时（秒）<input data-node-field="timeout_seconds" type="number" min="1" step="0.1"></label>',
+      '<label>最大搜索结果<input data-node-field="max_search_results" type="number" min="1" max="20"></label>',
+      '<label class="switch-field span-2"><span><strong>公告 JSON 走 stdin</strong><small>避免超长命令行。</small></span><input data-node-field="archive_payload_stdin" data-sensitive type="checkbox"></label>',
+      '<label class="span-2">管理员搜索前缀（每行一个）<textarea data-node-field="search_prefixes" rows="3"></textarea></label>',
+      '<label class="span-2">命令模板（JSON）<textarea data-node-field="command_templates" data-sensitive class="code-input" rows="9"></textarea></label>',
+      '<label class="span-2">额外环境变量（JSON）<textarea data-node-field="extra_environment" data-sensitive class="code-input" rows="6"></textarea></label>',
+      '</div></section>'
+    ].join("");
+  }
+
+  function resourceNodeDetailHtml(existing) {
+    return nodeDetailCommonHtml(existing) + [
+      '<section class="node-detail-section"><div class="node-detail-section-title"><span>Resource</span><h3>资源信息</h3></div><div class="form-grid">',
+      '<label class="span-2">平台标识<input data-node-field="external_id" maxlength="160" placeholder="群号、chat_id 或知识库 ID"></label>',
+      '<label class="span-2">说明<textarea data-node-field="description" maxlength="1000" rows="4" placeholder="用途、负责人和数据边界"></textarea></label>',
+      '<label class="span-2">元数据（JSON）<textarea data-node-field="metadata" class="code-input" rows="6"></textarea></label>',
+      '</div></section>'
+    ].join("");
+  }
+
+  function openNodeDetail(nodeId, kind, point) {
+    var node = nodeId ? graphNode(nodeId) : null;
+    var existing = Boolean(node);
+    var nodeKind = existing ? node.kind : kind;
+    if (!nodeKind) return;
+    var draft = clone(existing ? node.ref : newNodeDraft(nodeKind));
+    state.nodeDialog = {
+      mode: existing ? "edit" : "create",
+      kind: nodeKind,
+      originalNodeId: existing ? node.id : "",
+      point: clone(point || state.orchestrationMenuPoint),
+      draft: draft,
+      autoSecretBotId: !existing && nodeKind === "qq_bot" ? draft.id : ""
+    };
+    $("node-detail-kicker").textContent = existing ? "Edit one node" : "Create one node";
+    $("node-detail-title").textContent = (existing ? "配置 " : "新建 ") + nodeKindLabel(nodeKind);
+    $("node-detail-intro").textContent = existing
+      ? "当前只编辑“" + draft.name + "”。Bot 与群、群与群之间的配置彼此独立。"
+      : "保存后才会创建节点；请先确认内部 ID，它在创建后保持不变。";
+    var body = $("node-detail-body");
+    body.innerHTML = nodeKind === "qq_bot" ? qqNodeDetailHtml(existing) : nodeKind === "feishu_bot" ? feishuNodeDetailHtml(existing) : resourceNodeDetailHtml(existing);
+    setNodeDetailValue("id", draft.id);
+    setNodeDetailValue("name", draft.name);
+    setNodeDetailValue("enabled", draft.enabled);
+    if (nodeKind === "qq_bot") {
+      ["onebot_base_url", "access_token_file", "request_timeout_seconds", "webui_base_url", "webui_token_file", "webui_public_url", "webui_public_port", "qrcode_path"].forEach(function (name) { setNodeDetailValue(name, draft[name]); });
+      setNodeDetailValue("access_token", "");
+      setNodeDetailValue("webui_token", "");
+      setNodeDetailValue("webhook_secret", "");
+      setNodeDetailValue("administrator_qq_ids", listValue(draft.administrator_qq_ids));
+      setNodeDetailValue("announcement_actions", listValue(draft.announcement_actions));
+      if (!existing) {
+        nodeDetailControl("id").addEventListener("input", function () {
+          syncNewQQSecretPaths(this.value.trim());
+        });
+      }
+      var searchSelect = nodeDetailControl("search_feishu_bot_id");
+      state.config.feishu.bots.forEach(function (bot) {
+        var option = document.createElement("option");
+        option.value = bot.id;
+        option.textContent = bot.name + " (" + bot.id + ")";
+        searchSelect.appendChild(option);
+      });
+      setNodeDetailValue("search_feishu_bot_id", draft.search_feishu_bot_id || "");
+    } else if (nodeKind === "feishu_bot") {
+      ["driver", "executable", "timeout_seconds", "max_search_results", "archive_payload_stdin"].forEach(function (name) { setNodeDetailValue(name, draft[name]); });
+      setNodeDetailValue("search_prefixes", listValue(draft.search_prefixes));
+      setNodeDetailValue("command_templates", pretty(draft.command_templates));
+      setNodeDetailValue("extra_environment", pretty(draft.extra_environment));
+    } else {
+      setNodeDetailValue("external_id", draft.external_id || "");
+      setNodeDetailValue("description", draft.description || "");
+      setNodeDetailValue("metadata", pretty(draft.metadata));
+    }
+    if (!state.orchestrationSensitiveEditsAllowed) {
+      body.querySelectorAll("[data-sensitive]").forEach(function (control) {
+        control.disabled = true;
+        control.title = "该部署的敏感连接字段已锁定，请在服务器安全配置中开启后编辑";
+      });
+      var notice = document.createElement("div");
+      notice.className = "node-detail-lock-notice";
+      notice.textContent = "部署安全策略已锁定连接、Token 与命令执行字段；昵称、启用状态、管理员和非敏感能力仍可修改。";
+      body.prepend(notice);
+    }
+    $("node-detail-dialog").showModal();
+    window.setTimeout(function () { nodeDetailControl(existing ? "name" : "id").focus(); }, 20);
+  }
+
+  function closeNodeDetail() {
+    state.nodeDialog = null;
+    if ($("node-detail-dialog").open) $("node-detail-dialog").close();
+  }
+
+  function readNodeDetailDraft() {
+    var dialogState = state.nodeDialog;
+    var draft = clone(dialogState.draft);
+    draft.id = nodeDetailControl("id").value.trim();
+    draft.name = nodeDetailControl("name").value.trim();
+    draft.enabled = nodeDetailControl("enabled").checked;
+    var prefix = dialogState.kind === "qq_bot" ? "qq-bot:" : dialogState.kind === "feishu_bot" ? "feishu-bot:" : "";
+    var nextNodeId = prefix + draft.id;
+    if (nextNodeId !== dialogState.originalNodeId && graphNode(nextNodeId)) throw new Error("内部 ID 已被其他节点使用");
+    if (dialogState.kind === "qq_bot") {
+      syncNewQQSecretPaths(draft.id);
+      draft.onebot_base_url = nodeDetailControl("onebot_base_url").value.trim();
+      draft.access_token = nodeDetailControl("access_token").value || draft.access_token || "";
+      draft.access_token_file = nodeDetailControl("access_token_file").value.trim();
+      draft.webhook_secret = nodeDetailControl("webhook_secret").value || draft.webhook_secret || "";
+      draft.request_timeout_seconds = numberValue(nodeDetailControl("request_timeout_seconds").value, 15);
+      draft.webui_base_url = nodeDetailControl("webui_base_url").value.trim();
+      draft.webui_token = nodeDetailControl("webui_token").value || draft.webui_token || "";
+      draft.webui_token_file = nodeDetailControl("webui_token_file").value.trim();
+      draft.webui_public_url = nodeDetailControl("webui_public_url").value.trim();
+      draft.webui_public_port = numberValue(nodeDetailControl("webui_public_port").value, 6099);
+      draft.qrcode_path = nodeDetailControl("qrcode_path").value.trim();
+      draft.administrator_qq_ids = splitList(nodeDetailControl("administrator_qq_ids").value);
+      draft.announcement_actions = splitList(nodeDetailControl("announcement_actions").value);
+      draft.search_feishu_bot_id = nodeDetailControl("search_feishu_bot_id").value;
+    } else if (dialogState.kind === "feishu_bot") {
+      draft.driver = draft.enabled ? nodeDetailControl("driver").value : "disabled";
+      draft.executable = nodeDetailControl("executable").value.trim();
+      draft.timeout_seconds = numberValue(nodeDetailControl("timeout_seconds").value, 60);
+      draft.search_prefixes = splitList(nodeDetailControl("search_prefixes").value);
+      draft.max_search_results = numberValue(nodeDetailControl("max_search_results").value, 5);
+      draft.command_templates = parseJsonText(nodeDetailControl("command_templates").value, "飞书命令模板");
+      draft.archive_payload_stdin = nodeDetailControl("archive_payload_stdin").checked;
+      draft.extra_environment = parseJsonText(nodeDetailControl("extra_environment").value, "飞书环境变量");
+    } else {
+      draft.external_id = nodeDetailControl("external_id").value.trim();
+      draft.description = nodeDetailControl("description").value.trim();
+      draft.metadata = parseJsonText(nodeDetailControl("metadata").value, "资源元数据");
+    }
+    return draft;
+  }
+
+  function commitNodeDetailDraft(draft) {
+    var dialogState = state.nodeDialog;
+    var nodeId = (dialogState.kind === "qq_bot" ? "qq-bot:" : dialogState.kind === "feishu_bot" ? "feishu-bot:" : "") + draft.id;
+    if (dialogState.mode === "create") {
+      if (dialogState.kind === "qq_bot") {
+        recordBotIdentityChange("qq", "created", draft.id);
+        state.config.qq.bots.push(draft);
+      }
+      else if (dialogState.kind === "feishu_bot") {
+        recordBotIdentityChange("feishu", "created", draft.id);
+        state.config.feishu.bots.push(draft);
+      }
+      else state.config.orchestration.resources.push(draft);
+      state.config.orchestration.layout[nodeId] = dialogState.point;
+    } else {
+      var node = graphNode(dialogState.originalNodeId);
+      if (!node) throw new Error("节点已不存在，请刷新编排");
+      Object.assign(node.ref, draft);
+    }
+    dialogState.mode = "edit";
+    dialogState.originalNodeId = nodeId;
+    dialogState.draft = clone(draft);
+    nodeDetailControl("id").readOnly = true;
+    state.orchestrationSelected = nodeId;
+    normalizeOrchestration(state.config);
+    markOrchestrationDirty();
+    renderOrchestration();
+    renderOrchestrationInspector(nodeId);
+  }
+
+  $("node-detail-close").addEventListener("click", closeNodeDetail);
+  $("node-detail-cancel").addEventListener("click", closeNodeDetail);
+  $("node-detail-dialog").addEventListener("cancel", function (event) {
+    event.preventDefault();
+    closeNodeDetail();
+  });
+  $("node-detail-form").addEventListener("submit", async function (event) {
+    event.preventDefault();
+    if (!state.nodeDialog) return;
+    var button = $("node-detail-save");
+    button.disabled = true;
+    try {
+      var draft = readNodeDetailDraft();
+      commitNodeDetailDraft(draft);
+      if (await saveOrchestration()) closeNodeDetail();
+    } catch (error) {
+      showToast(error.message, true);
+    } finally {
+      button.disabled = false;
+    }
+  });
+
   function setField(card, name, value) {
     var input = card.querySelector('[data-field="' + name + '"]');
     if (!input) return;
@@ -1700,217 +1980,6 @@
     refresh();
   }
 
-  function renderQQAccountEditors() {
-    var target = $("qq-bot-editor");
-    target.replaceChildren();
-    state.config.qq.bots.forEach(function (bot, index) {
-      var card = document.createElement("article");
-      card.className = "editor-card qq-account-editor";
-      card.dataset.index = index;
-      card.innerHTML = [
-        '<div class="editor-head"><div class="editor-title"><span class="editor-index"></span><div><strong></strong><small></small></div></div><button type="button" class="button danger" data-remove>删除</button></div>',
-        '<div class="editor-body"><div class="form-grid">',
-        '<label>Bot ID<input data-field="id" pattern="[A-Za-z0-9_-]+" required></label>',
-        '<label>显示名称<input data-field="name" required></label>',
-        '<label class="switch-field span-2"><span><strong>启用这个 QQ Bot</strong><small>关闭后不接收事件，也不运行事务</small></span><input data-field="enabled" type="checkbox"></label>',
-        '<label class="span-2">OneBot HTTP 地址<input data-field="onebot_base_url"></label>',
-        '<label>Access Token<input data-field="access_token" type="password" placeholder="留空保持原值"></label>',
-        '<label>Webhook Secret<input data-field="webhook_secret" type="password" placeholder="留空保持原值"></label>',
-        '<div class="orchestration-link-card span-2"><div><strong>托管群与协作关系</strong><small data-managed-summary>尚未连接群</small></div><button type="button" class="button secondary" data-open-orchestration>打开资源编排</button></div>',
-        '<label class="span-2">管理员 QQ<textarea data-field="administrator_qq_ids" rows="2" placeholder="每行一个 QQ 号"></textarea></label>',
-        '<label>NapCat 公网端口<input data-field="webui_public_port" type="number"></label>',
-        '<label>NapCat 公网 URL<input data-field="webui_public_url" placeholder="留空自动按端口生成"></label>',
-        '<label class="span-2">二维码挂载路径<input data-field="qrcode_path" placeholder="/app/napcat-cache/qrcode.png"><small>Compose 默认已配置，一般无需修改</small></label>',
-        '<label class="span-2">公告动作名<textarea data-field="announcement_actions" rows="2"></textarea></label>',
-        '<label class="span-2">管理员搜索使用的飞书 Bot ID<input data-field="search_feishu_bot_id" placeholder="留空使用默认飞书 Bot"></label>',
-        '</div><div class="connection-hint"><strong>扫码登录</strong><span>保存连接后，到“资源编排”点击“扫码登录”，扫描对应 NapCat 实例生成的二维码。</span></div></div>'
-      ].join("");
-      card.querySelector(".editor-index").textContent = String(index + 1).padStart(2, "0");
-      card.querySelector(".editor-title strong").textContent = bot.name;
-      card.querySelector(".editor-title small").textContent = bot.id;
-      setField(card, "id", bot.id);
-      setField(card, "name", bot.name);
-      setField(card, "enabled", bot.enabled);
-      setField(card, "onebot_base_url", bot.onebot_base_url);
-      setField(card, "access_token", "");
-      setField(card, "webhook_secret", "");
-      var managedGroups = managedGroupIdsForBot(bot.id);
-      card.querySelector("[data-managed-summary]").textContent = managedGroups.length ? "已连接 " + managedGroups.length + " 个 QQ 群；事务在资源编排中逐群设置" : "尚未连接 QQ 群";
-      setField(card, "administrator_qq_ids", listValue(bot.administrator_qq_ids));
-      setField(card, "webui_public_port", bot.webui_public_port);
-      setField(card, "webui_public_url", bot.webui_public_url || "");
-      setField(card, "qrcode_path", bot.qrcode_path || "/app/napcat-cache/qrcode.png");
-      setField(card, "announcement_actions", listValue(bot.announcement_actions));
-      setField(card, "search_feishu_bot_id", bot.search_feishu_bot_id || "");
-      [
-        "onebot_base_url", "access_token", "webhook_secret", "webui_public_port",
-        "webui_public_url", "qrcode_path", "announcement_actions"
-      ].forEach(function (name) { lockSensitiveControl(field(card, name)); });
-      card.querySelector("[data-open-orchestration]").addEventListener("click", function () {
-        switchView("integrations");
-      });
-      card.querySelector("[data-remove]").addEventListener("click", async function () {
-        if (state.config.qq.bots.length <= 1) return showToast("至少保留一个 QQ Bot，可将其停用", true);
-        if (!await confirmAction({
-          title: "删除 QQ Bot？",
-          message: "将删除“" + bot.name + "”及其编排连接。保存设置后生效。",
-          confirmText: "删除 Bot",
-          danger: true
-        })) return;
-        collectQQConfiguration();
-        removeBotFromOrchestration("qq-bot", bot.id);
-        state.config.qq.bots.splice(index, 1);
-        renderQQAccountEditors();
-        markSettingsDirty();
-      });
-      target.appendChild(card);
-    });
-    if (!state.config.qq.bots.length) {
-      var empty = document.createElement("div");
-      empty.className = "empty-editor";
-      empty.textContent = "点击“添加 QQ Bot”开始配置。";
-      target.appendChild(empty);
-    }
-  }
-
-  function collectQQConfiguration() {
-    var bots = clone(state.config.qq.bots || []);
-    document.querySelectorAll(".qq-account-editor").forEach(function (card) {
-      var index = Number(card.dataset.index);
-      var original = bots[index] || defaultQQBot(index);
-      var nextId = field(card, "id").value.trim();
-      renameBotInOrchestration("qq-bot", original.id, nextId);
-      bots[index] = Object.assign(original, {
-        id: nextId,
-        name: field(card, "name").value.trim(),
-        enabled: field(card, "enabled").checked,
-        onebot_base_url: field(card, "onebot_base_url").value.trim(),
-        access_token: field(card, "access_token").value || original.access_token || "",
-        access_token_file: original.access_token_file || "/app/data/secrets/napcat-onebot.token",
-        webhook_secret: field(card, "webhook_secret").value || original.webhook_secret || "",
-        request_timeout_seconds: original.request_timeout_seconds || 15,
-        webui_base_url: original.webui_base_url || "http://qq-bridge:6099",
-        webui_token: original.webui_token || "",
-        webui_token_file: original.webui_token_file || "/app/data/secrets/napcat-webui.token",
-        webui_public_url: field(card, "webui_public_url").value.trim(),
-        webui_public_port: numberValue(field(card, "webui_public_port").value, 6099),
-        qrcode_path: field(card, "qrcode_path").value.trim() || "/app/napcat-cache/qrcode.png",
-        administrator_qq_ids: splitList(field(card, "administrator_qq_ids").value),
-        announcement_actions: splitList(field(card, "announcement_actions").value),
-        search_feishu_bot_id: field(card, "search_feishu_bot_id").value.trim()
-      });
-    });
-    state.config.qq.bots = bots;
-    return bots;
-  }
-
-  function renderFeishuEditors() {
-    var target = $("feishu-bot-editor");
-    target.replaceChildren();
-    state.config.feishu.bots.forEach(function (bot, index) {
-      var card = document.createElement("article");
-      card.className = "editor-card feishu-editor";
-      card.dataset.index = index;
-      card.innerHTML = [
-        '<div class="editor-head"><div class="editor-title"><span class="editor-index"></span><div><strong></strong><small></small></div></div><button type="button" class="button danger" data-remove>删除</button></div>',
-        '<div class="editor-body"><div class="form-grid">',
-        '<label>Bot ID<input data-field="id" pattern="[A-Za-z0-9_-]+" required></label>',
-        '<label>显示名称<input data-field="name" required></label>',
-        '<label class="switch-field span-2"><span><strong>启用这个飞书 Bot</strong><small>使用独立 CLI 登录态和环境变量</small></span><input data-field="enabled" type="checkbox"></label>',
-        '<label>可执行文件<input data-field="executable"></label>',
-        '<label>超时（秒）<input data-field="timeout_seconds" type="number" min="1"></label>',
-        '<label>最大搜索结果<input data-field="max_search_results" type="number" min="1" max="20"></label>',
-        '<label class="switch-field"><span><strong>公告 JSON 走 stdin</strong><small>避免超长命令行</small></span><input data-field="archive_payload_stdin" type="checkbox"></label>',
-        '<label class="span-2">管理员搜索前缀<textarea data-field="search_prefixes" rows="2"></textarea></label>',
-        '<label class="span-2">命令模板（JSON）<textarea data-field="command_templates" class="code-input" rows="10"></textarea></label>',
-        '<label class="span-2">额外环境变量（JSON）<textarea data-field="extra_environment" class="code-input" rows="5"></textarea></label>',
-        '</div></div>'
-      ].join("");
-      card.querySelector(".editor-index").textContent = String(index + 1).padStart(2, "0");
-      card.querySelector(".editor-title strong").textContent = bot.name;
-      card.querySelector(".editor-title small").textContent = bot.id;
-      setField(card, "id", bot.id);
-      setField(card, "name", bot.name);
-      setField(card, "enabled", bot.enabled);
-      setField(card, "executable", bot.executable);
-      setField(card, "timeout_seconds", bot.timeout_seconds);
-      setField(card, "max_search_results", bot.max_search_results);
-      setField(card, "archive_payload_stdin", bot.archive_payload_stdin);
-      setField(card, "search_prefixes", listValue(bot.search_prefixes));
-      setField(card, "command_templates", pretty(bot.command_templates));
-      setField(card, "extra_environment", pretty(bot.extra_environment));
-      ["executable", "command_templates", "archive_payload_stdin", "extra_environment"].forEach(
-        function (name) { lockSensitiveControl(field(card, name)); }
-      );
-      card.querySelector("[data-remove]").addEventListener("click", async function () {
-        if (state.config.feishu.bots.length <= 1) return showToast("至少保留一个飞书 Bot，可将其停用", true);
-        if (!await confirmAction({
-          title: "删除飞书 Bot？",
-          message: "将删除“" + bot.name + "”及其编排连接。保存设置后生效。",
-          confirmText: "删除 Bot",
-          danger: true
-        })) return;
-        collectFeishuBots();
-        removeBotFromOrchestration("feishu-bot", bot.id);
-        state.config.feishu.bots.splice(index, 1);
-        renderFeishuEditors();
-        markSettingsDirty();
-      });
-      target.appendChild(card);
-    });
-    if (!state.config.feishu.bots.length) {
-      var empty = document.createElement("div");
-      empty.className = "empty-editor";
-      empty.textContent = "点击“添加飞书 Bot”开始配置。";
-      target.appendChild(empty);
-    }
-  }
-
-  function collectFeishuBots() {
-    var bots = [];
-    document.querySelectorAll(".feishu-editor").forEach(function (card) {
-      var original = state.config.feishu.bots[Number(card.dataset.index)] || defaultFeishuBot(bots.length);
-      var enabled = field(card, "enabled").checked;
-      var nextId = field(card, "id").value.trim();
-      renameBotInOrchestration("feishu-bot", original.id, nextId);
-      var incomingEnvironment = parseJsonText(field(card, "extra_environment").value, "飞书环境变量");
-      Object.keys(incomingEnvironment).forEach(function (key) {
-        if (["", "***"].indexOf(incomingEnvironment[key]) >= 0 && original.extra_environment && original.extra_environment[key]) {
-          incomingEnvironment[key] = original.extra_environment[key];
-        }
-      });
-      bots.push({
-        id: nextId,
-        name: field(card, "name").value.trim(),
-        enabled: enabled,
-        driver: enabled ? "cli" : "disabled",
-        executable: field(card, "executable").value.trim(),
-        timeout_seconds: numberValue(field(card, "timeout_seconds").value, 60),
-        search_prefixes: splitList(field(card, "search_prefixes").value),
-        max_search_results: numberValue(field(card, "max_search_results").value, 5),
-        command_templates: parseJsonText(field(card, "command_templates").value, "飞书命令模板"),
-        archive_payload_stdin: field(card, "archive_payload_stdin").checked,
-        extra_environment: incomingEnvironment
-      });
-    });
-    state.config.feishu.bots = bots;
-    return bots;
-  }
-
-  $("add-qq-bot").addEventListener("click", function () {
-    collectQQConfiguration();
-    state.config.qq.bots.push(defaultQQBot(state.config.qq.bots.length));
-    renderQQAccountEditors();
-    markSettingsDirty();
-  });
-
-  $("add-feishu-bot").addEventListener("click", function () {
-    collectFeishuBots();
-    state.config.feishu.bots.push(defaultFeishuBot(state.config.feishu.bots.length));
-    renderFeishuEditors();
-    markSettingsDirty();
-  });
-
   function populateSettings(c) {
     $("cfg-environment").value = c.app.environment;
     $("cfg-log-level").value = c.app.log_level;
@@ -1935,36 +2004,22 @@
     $("cfg-join-days").value = c.retention.join_request_days;
     $("cfg-mod-days").value = c.retention.moderation_run_days;
     $("cfg-audit-days").value = c.retention.audit_days;
-    renderQQAccountEditors();
-    renderFeishuEditors();
     [
       "cfg-environment", "cfg-log-level", "cfg-secure-cookie", "cfg-admin-token",
       "cfg-message-archive-path", "cfg-llm-url", "cfg-llm-key"
     ].forEach(function (id) { lockSensitiveControl($(id)); });
-    activateSettingsStep(state.settingsStep || "qq");
+    activateSettingsStep(settingsSteps.indexOf(state.settingsStep) >= 0 ? state.settingsStep : "llm");
   }
 
   function updateSettingsReview() {
     if (!state.config) return;
-    var bots = collectQQConfiguration();
-    var enabled = bots.filter(function (bot) { return bot.enabled; });
-    var enabledBotIds = new Set(enabled.map(function (bot) { return "qq-bot:" + bot.id; }));
-    var resources = new Map((state.config.orchestration.resources || []).map(function (resource) { return [resource.id, resource]; }));
-    var assignments = (state.config.orchestration.edges || []).filter(function (edge) {
-      var resource = resources.get(edge.target);
-      return edge.enabled && enabledBotIds.has(edge.source) && resource && resource.enabled && resource.kind === "qq_group" && ["manages", "observes"].indexOf(edge.relation) >= 0 && edge.tasks;
-    });
-    var recorders = assignments.filter(function (edge) { return edge.tasks.message_detection.record_only; });
-    var analyzers = assignments.filter(function (edge) { return edge.tasks.message_detection.analyze; });
-    var notices = assignments.filter(function (edge) { return edge.tasks.announcement_sync.enabled; });
     var target = $("settings-review");
     target.replaceChildren();
     [
-      ["QQ 账号", enabled.length + " / " + bots.length + " 已启用", "每个账号拥有独立连接与 Webhook"],
-      ["群级分工", assignments.length + " 条连接", "在资源编排中逐群维护"],
-      ["纯记录", recorders.length + " 个群级任务", $("cfg-message-archive-path").value || "data/group-message-records"],
-      ["消息分析", analyzers.length + " 个群级任务", "模型驱动：" + $("cfg-llm-driver").value],
-      ["公告同步", notices.length + " 个群级任务", "飞书账号：" + state.config.feishu.bots.length + " 个"],
+      ["配置边界", "仅平台设置", "Bot、群、连接与群级事务由资源编排独立保存"],
+      ["模型驱动", $("cfg-llm-driver").value, $("cfg-llm-model").value || "未指定模型"],
+      ["消息归档", $("cfg-message-archive-path").value || "data/group-message-records", "是否记录由每条 Bot→群连接决定"],
+      ["共享策略", "入群与风控", "所有 Bot 共用平台级判断文本"],
       ["安全模式", $("cfg-dry-run").checked ? "安全演练已开启" : "真实出站动作已允许", "保存后立即生效"],
       ["数据保留", $("cfg-retention-enabled").checked ? $("cfg-message-days").value + " 天" : "不自动清理", "SQLite 与按日 JSONL 使用同一期限"]
     ].forEach(function (item) {
@@ -1981,7 +2036,6 @@
     var data = await api("/api/gui/settings");
     state.config = data.config;
     state.settingsRevision = data.revision || "";
-    normalizeBotConfig(state.config);
     populateSettings(state.config);
     state.settingsDirty = false;
     $("settings-state").textContent = sensitiveSettingsLocked()
@@ -1996,11 +2050,6 @@
     $("settings-state").textContent = "正在校验并热加载…";
     try {
       var c = clone(state.config);
-      c.qq.bots = collectQQConfiguration();
-      c.feishu.bots = collectFeishuBots();
-      c.orchestration = clone(state.config.orchestration);
-      c.qq.enabled = c.qq.bots.some(function (bot) { return bot.enabled; });
-      c.feishu.enabled = c.feishu.bots.some(function (bot) { return bot.enabled; });
       c.app.environment = $("cfg-environment").value.trim();
       c.app.log_level = $("cfg-log-level").value;
       c.app.dry_run = $("cfg-dry-run").checked;
@@ -2066,7 +2115,7 @@
   async function populateRecordBotFilter() {
     var select = $("record-bot");
     var currentValue = select.value;
-    var settings = await api("/api/gui/settings");
+    var settings = await api("/api/gui/orchestration");
     var config = settings.config;
     normalizeBotConfig(config);
     select.replaceChildren();
@@ -2350,7 +2399,7 @@
     var commands = [
       { label: "打开运行概览", detail: "查看计数、诊断和手动任务", category: "导航", action: function () { return switchView("dashboard"); } },
       { label: "打开资源编排", detail: "管理 Bot、群、知识库和连接", category: "导航", action: function () { return switchView("integrations"); } },
-      { label: "打开系统设置", detail: "连接、事务、模型和保留策略", category: "导航", action: function () { return switchView("settings"); } },
+      { label: "打开系统设置", detail: "模型、策略、存储和系统安全", category: "导航", action: function () { return switchView("settings"); } },
       { label: "打开记录与审计", detail: "搜索消息、公告、分析和审计事件", category: "导航", action: function () { return switchView("records"); } },
       { label: "新建 QQ Bot", detail: "在资源编排中创建 OneBot 账号", category: "编排", action: function () { return commandCreateResource("qq_bot"); } },
       { label: "新建飞书 Bot", detail: "在资源编排中创建飞书 CLI 账号", category: "编排", action: function () { return commandCreateResource("feishu_bot"); } },

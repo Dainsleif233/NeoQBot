@@ -81,6 +81,13 @@ the only canonical source for QQ group ownership and task assignments. A `tasks`
 switches, schedules, thresholds, and archive targets in different groups. See the
 [orchestration guide](docs/ORCHESTRATION.md) for details.
 
+QQ and Feishu Bots are created, deleted, connected, and authenticated only in Resource
+Orchestration. The inspector shows one node at a time, while its full configuration opens in an
+in-page modal or from the node context menu. System Settings is limited to models, shared policy,
+storage, runtime, and security. An existing Bot's internal ID is immutable so its webhook, secret
+paths, and login identity remain stable. Events from groups not connected to that Bot are discarded
+at the webhook boundary before they enter the runtime queue.
+
 ## Quick start
 
 ### Requirements

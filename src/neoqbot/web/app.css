@@ -10,6 +10,8 @@
   --line-strong: #454545;
   --accent: #d7d7d7;
   --accent-soft: rgba(255, 255, 255, .07);
+  --danger: #ff8f8f;
+  --warning: #e9c46a;
   --inverse-bg: #fff;
   --inverse-text: #000;
   --shadow: 0 20px 64px rgba(0, 0, 0, .38);
@@ -29,6 +31,8 @@
   --line-strong: #c8c8c8;
   --accent: #292929;
   --accent-soft: rgba(0, 0, 0, .055);
+  --danger: #a92323;
+  --warning: #8a6512;
   --inverse-bg: #000;
   --inverse-text: #fff;
   --shadow: 0 24px 80px rgba(0, 0, 0, .12);
@@ -511,6 +515,8 @@ input, textarea, select { border-radius: 6px; padding: 9px 10px; background: var
 .context-menu-label { padding: 6px 9px 7px; color: var(--subtle); font: 8px ui-monospace, Consolas, monospace; text-transform: uppercase; letter-spacing: .12em; }
 .context-menu button { display: grid; grid-template-columns: 28px 1fr; align-items: center; gap: 8px; width: 100%; padding: 7px 8px; border: 0; border-radius: 5px; color: var(--text); background: transparent; text-align: left; }
 .context-menu button:hover { background: var(--surface-3); }
+.context-menu button.danger-action { color: var(--danger); }
+.context-menu button.danger-action:hover { background: color-mix(in srgb, var(--danger) 12%, var(--surface)); }
 .context-menu button > span { width: 26px; height: 26px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 5px; font: 700 10px ui-monospace, Consolas, monospace; }
 .context-menu strong, .context-menu small { display: block; }
 .context-menu strong { font-size: 10px; }
@@ -563,6 +569,25 @@ input, textarea, select { border-radius: 6px; padding: 9px 10px; background: var
 .form-dialog header .icon-button { width: 32px; height: 32px; font-size: 24px; }
 .form-dialog > form > .muted { line-height: 1.65; }
 .form-dialog footer { justify-content: flex-end; margin-top: 22px; }
+.node-detail-dialog { width: min(860px, calc(100vw - 32px)); max-height: min(880px, calc(100vh - 32px)); overflow: hidden; }
+.node-detail-dialog > form { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; max-height: min(880px, calc(100vh - 32px)); padding: 0; }
+.node-detail-dialog header { padding: 20px 22px 16px; }
+.node-detail-dialog > form > .muted { margin: 0; padding: 13px 22px; border-bottom: 1px solid var(--line); background: var(--surface-2); }
+.node-detail-body { min-height: 0; overflow: auto; padding: 0 22px; }
+.node-detail-section { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 20px; padding: 22px 0; border-bottom: 1px solid var(--line); }
+.node-detail-section:last-child { border-bottom: 0; }
+.node-detail-section-title span, .node-detail-section-title h3 { display: block; margin: 0; }
+.node-detail-section-title span { color: var(--subtle); font: 10px ui-monospace, Consolas, monospace; letter-spacing: .1em; text-transform: uppercase; }
+.node-detail-section-title h3 { margin-top: 5px; font-size: 14px; }
+.node-detail-section .form-grid { margin: 0; }
+.node-detail-section input[readonly] { color: var(--muted); background: var(--surface-2); cursor: not-allowed; }
+.node-detail-section label > small { display: block; margin-top: 5px; color: var(--subtle); font-size: 10px; line-height: 1.45; }
+.node-detail-lock-notice { margin: 18px 0 0; padding: 11px 13px; border: 1px solid color-mix(in srgb, var(--warning) 42%, var(--line)); border-radius: 7px; color: var(--muted); background: color-mix(in srgb, var(--warning) 8%, var(--surface)); font-size: 11px; line-height: 1.55; }
+.node-detail-dialog footer { margin: 0; padding: 16px 22px 20px; border-top: 1px solid var(--line); background: var(--surface); }
+
+@media (max-width: 720px) {
+  .node-detail-section { grid-template-columns: 1fr; gap: 12px; }
+}
 .profile-dialog { width: min(760px, calc(100vw - 32px)); max-height: min(820px, calc(100vh - 32px)); overflow: auto; }
 .profile-dialog-body, .value-dialog-body { padding: 22px; }
 .profile-summary { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 13px; margin: 18px 0 4px; padding: 14px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-2); }

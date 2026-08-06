@@ -6,7 +6,7 @@ from .adapters.feishu_cli import DisabledFeishuGateway, FeishuCliGateway
 from .adapters.llm import OpenAICompatibleDecisionEngine, RuleBasedDecisionEngine
 from .adapters.onebot import OneBotClient
 from .auth import GuiAuth
-from .config import Settings
+from .config import FeishuBotConfig, Settings
 from .database import Database
 from .events import EventHandler
 from .napcat import NapCatWebUiClient
@@ -20,7 +20,7 @@ from .services import AnnouncementService, JoinApprovalService, ModerationServic
 class Container:
     settings: Settings
     database: Database
-    qq: OneBotClient
+    qq: OneBotClient | None
     qq_clients: dict[str, OneBotClient]
     napcat_clients: dict[str, NapCatWebUiClient]
     engine: DecisionEngine
@@ -51,7 +51,7 @@ def build_container(settings: Settings) -> Container:
     qq_bots = settings.effective_qq_bots()
     qq_clients = {bot.id: OneBotClient(bot, dry_run=settings.app.dry_run) for bot in qq_bots}
     napcat_clients = {bot.id: NapCatWebUiClient(bot) for bot in qq_bots}
-    qq = qq_clients[qq_bots[0].id]
+    qq = qq_clients[qq_bots[0].id] if qq_bots else None
     if settings.llm.driver == "openai_compatible":
         engine: DecisionEngine = OpenAICompatibleDecisionEngine(
             settings.llm, settings.join_approval, settings.moderation
@@ -65,8 +65,12 @@ def build_container(settings: Settings) -> Container:
             feishu_clients[bot.id] = FeishuCliGateway(bot)
         else:
             feishu_clients[bot.id] = DisabledFeishuGateway()
-    feishu = feishu_clients[feishu_bots[0].id]
-    first_enabled_feishu = next((bot for bot in feishu_bots if bot.enabled), feishu_bots[0])
+    feishu = feishu_clients[feishu_bots[0].id] if feishu_bots else DisabledFeishuGateway()
+    fallback_feishu = FeishuBotConfig(id="default", name="默认飞书 Bot", enabled=False)
+    first_enabled_feishu = next(
+        (bot for bot in feishu_bots if bot.enabled),
+        feishu_bots[0] if feishu_bots else fallback_feishu,
+    )
 
     join_services: dict[str, JoinApprovalService] = {}
     moderation_services: dict[str, ModerationService] = {}
