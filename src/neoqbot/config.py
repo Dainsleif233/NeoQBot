@@ -26,6 +26,13 @@ def resolve_secret(value: str, file_path: str = "") -> str:
     return value.strip()
 
 
+BUNDLED_NAPCAT_ONEBOT_URL = "http://qq-bridge:3000"
+BUNDLED_NAPCAT_WEBUI_URL = "http://qq-bridge:6099"
+BUNDLED_NAPCAT_ONEBOT_TOKEN_FILE = "data/secrets/napcat-onebot.token"
+BUNDLED_NAPCAT_WEBUI_TOKEN_FILE = "data/secrets/napcat-webui.token"
+BUNDLED_NAPCAT_QRCODE_PATH = "/app/napcat-cache/qrcode.png"
+
+
 class AppConfig(BaseModel):
     environment: str = "development"
     host: str = "127.0.0.1"
@@ -168,12 +175,32 @@ class QQTaskConfig(BaseModel):
 class QQBotConfig(QQConnectionConfig):
     id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
     name: str = Field(default="QQ Bot", min_length=1, max_length=80)
+    connection_mode: Literal["bundled_napcat", "external"] = "external"
     search_feishu_bot_id: str = ""
+
+    @model_validator(mode="after")
+    def apply_connection_mode(self) -> QQBotConfig:
+        if self.connection_mode == "bundled_napcat":
+            self.onebot_base_url = BUNDLED_NAPCAT_ONEBOT_URL
+            self.access_token = ""
+            self.access_token_file = BUNDLED_NAPCAT_ONEBOT_TOKEN_FILE
+            self.webhook_secret = ""
+            self.webui_base_url = BUNDLED_NAPCAT_WEBUI_URL
+            self.webui_token = ""
+            self.webui_token_file = BUNDLED_NAPCAT_WEBUI_TOKEN_FILE
+            self.qrcode_path = BUNDLED_NAPCAT_QRCODE_PATH
+        return self
 
 
 class QQConfig(BaseModel):
     bots: list[QQBotConfig] = Field(
-        default_factory=lambda: [QQBotConfig(id="default", name="默认 QQ Bot")],
+        default_factory=lambda: [
+            QQBotConfig(
+                id="default",
+                name="默认 QQ Bot",
+                connection_mode="bundled_napcat",
+            )
+        ],
     )
 
     @model_validator(mode="after")
@@ -181,6 +208,11 @@ class QQConfig(BaseModel):
         identifiers = [bot.id for bot in self.bots]
         if len(identifiers) != len(set(identifiers)):
             raise ValueError("qq.bots 中的 id 必须唯一")
+        bundled = [bot.id for bot in self.bots if bot.connection_mode == "bundled_napcat"]
+        if len(bundled) > 1:
+            raise ValueError(
+                "Compose 内置 NapCat 只能绑定一个 QQ Bot；其他 Bot 请使用 external 连接模式"
+            )
         return self
 
 
@@ -360,6 +392,38 @@ def _legacy_tasks_enabled(value: object) -> bool:
     return value is True
 
 
+def _looks_like_legacy_bundled_bot(raw_bot: dict[str, object], bot_id: str) -> bool:
+    """Recognize the old/default single Compose sidecar without capturing custom adapters."""
+    onebot_urls = {
+        "",
+        "http://127.0.0.1:3000",
+        "http://localhost:3000",
+        BUNDLED_NAPCAT_ONEBOT_URL,
+    }
+    webui_urls = {
+        "",
+        "http://127.0.0.1:6099",
+        "http://localhost:6099",
+        BUNDLED_NAPCAT_WEBUI_URL,
+    }
+    generated_roots = {f"data/secrets/qq/{bot_id}", f"/app/data/secrets/qq/{bot_id}"}
+    onebot_files = {"", BUNDLED_NAPCAT_ONEBOT_TOKEN_FILE} | {
+        f"{root}/onebot.token" for root in generated_roots
+    }
+    webui_files = {"", BUNDLED_NAPCAT_WEBUI_TOKEN_FILE} | {
+        f"{root}/webui.token" for root in generated_roots
+    }
+    return (
+        str(raw_bot.get("onebot_base_url") or "").rstrip("/") in onebot_urls
+        and str(raw_bot.get("webui_base_url") or "").rstrip("/") in webui_urls
+        and str(raw_bot.get("access_token_file") or "").replace("\\", "/") in onebot_files
+        and str(raw_bot.get("webui_token_file") or "").replace("\\", "/") in webui_files
+        and not str(raw_bot.get("access_token") or "").strip()
+        and not str(raw_bot.get("webui_token") or "").strip()
+        and not str(raw_bot.get("webhook_secret") or "").strip()
+    )
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="NEOQBOT_",
@@ -390,6 +454,20 @@ class Settings(BaseSettings):
         qq = data.get("qq")
         if not isinstance(qq, dict) or not isinstance(qq.get("bots"), list):
             return data
+        for index, raw_bot in enumerate(qq["bots"]):
+            if not isinstance(raw_bot, dict) or "connection_mode" in raw_bot:
+                continue
+            bot_id = str(raw_bot.get("id") or "default")
+            connection_mode = (
+                "bundled_napcat"
+                if index == 0 and _looks_like_legacy_bundled_bot(raw_bot, bot_id)
+                else "external"
+            )
+            raw_bot["connection_mode"] = connection_mode
+            if connection_mode == "external" and str(raw_bot.get("qrcode_path") or "").replace(
+                "\\", "/"
+            ) in {"", "data/napcat-cache/qrcode.png"}:
+                raw_bot["qrcode_path"] = f"data/napcat-cache/{bot_id}/qrcode.png"
         orchestration = data.setdefault("orchestration", {})
         if not isinstance(orchestration, dict):
             return data
@@ -528,6 +606,12 @@ class Settings(BaseSettings):
         if bot_id is None:
             return bots[0] if bots else None
         return next((bot for bot in bots if bot.id == bot_id), None)
+
+    def bundled_qq_bot(self) -> QQBotConfig | None:
+        return next(
+            (bot for bot in self.effective_qq_bots() if bot.connection_mode == "bundled_napcat"),
+            None,
+        )
 
     def feishu_bot(self, bot_id: str | None = None) -> FeishuBotConfig | None:
         bots = self.effective_feishu_bots()

@@ -21,7 +21,7 @@ services:
         neoqbot init-napcat \
           --napcat-config-dir /mnt/napcat-config \
           --secret-dir /mnt/neoqbot-data/secrets \
-          --webhook-url http://neoqbot:8080/webhooks/onebot/default
+          --webhook-url http://neoqbot:8080/webhooks/onebot
         chown -R 10001:10001 /mnt/neoqbot-data /mnt/feishu-home
         chmod 600 /mnt/neoqbot-data/config.yaml /mnt/neoqbot-data/secrets/napcat-onebot.token /mnt/neoqbot-data/secrets/napcat-webui.token /mnt/neoqbot-data/secrets/admin-api.token /mnt/neoqbot-data/secrets/gui-bootstrap-password
         chmod 700 /mnt/neoqbot-data /mnt/feishu-home /mnt/napcat-config /mnt/qq-session

@@ -24,6 +24,12 @@
 平台登录身份；显示名称可以自由修改。需要更换身份时，应新建 Bot、迁移连接并确认新账号登录，
 再删除旧节点，避免把仍然有效的 NapCat 登录态误判成另一个账号。
 
+QQ Bot 的“连接方式”分为两类：`bundled_napcat` 使用 Compose 自带的 `qq-bridge`、持久化
+Secret 和二维码卷；整个部署最多只能有一个此类节点。其事件使用与 Bot ID 无关的
+`/webhooks/onebot` 入口，因此修改昵称或迁移首个节点不会再留下 `/default` 404。其余 QQ Bot
+必须选择 `external`，分别配置独立的 OneBot/NapCat 地址、Token 文件和二维码路径；一个
+NapCat 进程不能同时代表两个真实 QQ 账号。
+
 ## 连接语义
 
 | 连接 | 建议使用场景 | 对当前 Runtime 的影响 |

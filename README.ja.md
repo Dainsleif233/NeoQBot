@@ -135,6 +135,11 @@ docker compose exec neoqbot sh -c 'cat /app/data/secrets/gui-bootstrap-password'
 不要な場合は `.env` に `NEOQBOT_GUI_BIND_IP=127.0.0.1` を設定します。NapCat の `6099` と OneBot
 の `3000` は Compose 内部ネットワークだけで利用し、インターネットへ公開しないでください。
 
+同梱の `qq-bridge` が表す実 QQ アカウントは 1 つだけです。リソース編成内の最初の互換 QQ Bot は
+自動的に「内蔵 NapCat」を使用し、永続 Secret とログイン状態を引き継ぎます。追加の QQ Bot は
+それぞれ独立した「外部 OneBot / NapCat」インスタンスへ接続してください。内蔵 NapCat の上報先は
+`/webhooks/onebot` となり、固定の `default` Bot ID には依存しません。
+
 初回起動時、Compose はイメージ内に組み込まれた `config.example.yaml` から永続設定を作成します。
 ホストの bind mount を使用しないため、Git ベースの環境やリモート Docker daemon でも未追跡の
 `config.yaml` は不要です。環境固有の値は `.env` またはプラットフォーム環境変数で上書きし、

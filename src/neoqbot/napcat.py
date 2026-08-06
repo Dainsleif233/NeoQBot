@@ -101,7 +101,7 @@ def initialize_secrets(secret_dir: str | Path) -> dict[str, str]:
 def initialize_napcat(
     config_dir: str | Path,
     secret_dir: str | Path,
-    webhook_url: str = "http://neoqbot:8080/webhooks/onebot/default",
+    webhook_url: str = "http://neoqbot:8080/webhooks/onebot",
     http_port: int = 3000,
     webui_port: int = 6099,
 ) -> dict[str, str]:

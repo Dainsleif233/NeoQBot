@@ -80,6 +80,8 @@ stateDiagram-v2
   `feishu-bot:<id>`；
 - QQ/飞书 Bot 账号只在编排工作台新增、删除和编辑；已有 Bot 的内部 ID 不可变，昵称与连接参数
   在单节点中心弹窗内保存；
+- Compose 自带的 NapCat 侧车通过 `connection_mode=bundled_napcat` 明确绑定到唯一一个 QQ
+  Bot，并向身份无关的 `/webhooks/onebot` 上报；更多 QQ Bot 必须使用独立外部适配器；
 - 群和知识库保存在 `orchestration.resources`，当前资源类型为 `qq_group`、
   `feishu_group` 和 `knowledge_base`；
 - 多对多连接保存在 `orchestration.edges`，可表达管理、监听、归档、检索和同步；

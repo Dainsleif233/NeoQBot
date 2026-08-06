@@ -126,6 +126,11 @@ docker compose exec neoqbot sh -c 'cat /app/data/secrets/gui-bootstrap-password'
 登录态、二维码缓存和飞书用户目录。NapCat 的 `6099` 和 OneBot 的 `3000` 默认仅存在于 Compose
 内部网络，不要把它们额外映射到公网。
 
+Compose 自带的 `qq-bridge` 只承载一个真实 QQ 账号。资源编排中首个兼容旧配置的 QQ Bot 会
+自动使用“内置 NapCat”模式并复用初始化服务生成的 Secret 与登录态；新增的其他 QQ Bot 必须
+选择“外部 OneBot / NapCat”，并指向各自独立的实例。NapCat 统一上报到
+`/webhooks/onebot`，不再依赖固定的 `default` Bot ID。
+
 Compose 首次启动使用镜像内置的 `config.example.yaml` 创建持久化配置，不依赖宿主机 bind mount，
 适用于 GitHub 拉取式部署和远程 Docker daemon。部署差异优先通过 `.env` 或平台环境变量覆盖；
 Secret 不应写入镜像或仓库。

@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 
 from . import __version__
 from .auth import GuiSession
-from .config import FeishuBotConfig, QQBotConfig, Settings
+from .config import FeishuBotConfig, QQBotConfig, Settings, resolve_secret
 from .container import Container
 from .security import FailureLimiter
 
@@ -188,7 +188,6 @@ def _preserve_masked_secrets(candidate: dict[str, Any], current: Settings) -> di
     qq_section = candidate.setdefault("qq", {})
     if isinstance(qq_section, dict) and isinstance(qq_section.get("bots"), list):
         current_bots = {bot.id: bot for bot in current.effective_qq_bots()}
-        safe_defaults = QQBotConfig(id="new-bot", enabled=False).model_dump(mode="json")
         locked_keys = {
             "onebot_base_url",
             "access_token",
@@ -203,6 +202,16 @@ def _preserve_masked_secrets(candidate: dict[str, Any], current: Settings) -> di
             "qrcode_path",
             "announcement_actions",
         }
+        mode_connection_keys = {
+            "onebot_base_url",
+            "access_token",
+            "access_token_file",
+            "webhook_secret",
+            "webui_base_url",
+            "webui_token",
+            "webui_token_file",
+            "qrcode_path",
+        }
         for incoming in qq_section["bots"]:
             if not isinstance(incoming, dict):
                 continue
@@ -210,20 +219,56 @@ def _preserve_masked_secrets(candidate: dict[str, Any], current: Settings) -> di
             existing = current_bots.get(incoming_id)
             if existing is None:
                 if not sensitive_edits:
-                    incoming["enabled"] = False
+                    connection_mode = (
+                        "bundled_napcat"
+                        if incoming.get("connection_mode") == "bundled_napcat"
+                        else "external"
+                    )
+                    safe_defaults = QQBotConfig(
+                        id=incoming_id or "new-bot",
+                        enabled=False,
+                        connection_mode=connection_mode,
+                    ).model_dump(mode="json")
                     for key in locked_keys:
                         incoming[key] = safe_defaults[key]
-                    secret_root = f"data/secrets/qq/{incoming_id or 'new-bot'}"
-                    incoming["access_token_file"] = f"{secret_root}/onebot.token"
-                    incoming["webui_token_file"] = f"{secret_root}/webui.token"
+                    if connection_mode == "external":
+                        secret_root = f"data/secrets/qq/{incoming_id or 'new-bot'}"
+                        incoming["access_token_file"] = f"{secret_root}/onebot.token"
+                        incoming["webui_token_file"] = f"{secret_root}/webui.token"
+                        incoming["qrcode_path"] = (
+                            f"data/napcat-cache/{incoming_id or 'new-bot'}/qrcode.png"
+                        )
                 continue
             for key in ("access_token", "webui_token", "webhook_secret"):
                 if incoming.get(key) in (None, "", "***"):
                     incoming[key] = getattr(existing, key)
             if not sensitive_edits:
                 existing_data = existing.model_dump(mode="json")
-                for key in locked_keys:
-                    incoming[key] = existing_data[key]
+                connection_mode = (
+                    "bundled_napcat"
+                    if incoming.get("connection_mode") == "bundled_napcat"
+                    else "external"
+                )
+                if connection_mode == existing.connection_mode:
+                    for key in locked_keys:
+                        incoming[key] = existing_data[key]
+                else:
+                    safe_defaults = QQBotConfig(
+                        id=incoming_id,
+                        enabled=existing.enabled,
+                        connection_mode=connection_mode,
+                    ).model_dump(mode="json")
+                    for key in locked_keys:
+                        incoming[key] = (
+                            safe_defaults[key]
+                            if key in mode_connection_keys
+                            else existing_data[key]
+                        )
+                    if connection_mode == "external":
+                        secret_root = f"data/secrets/qq/{incoming_id}"
+                        incoming["access_token_file"] = f"{secret_root}/onebot.token"
+                        incoming["webui_token_file"] = f"{secret_root}/webui.token"
+                        incoming["qrcode_path"] = f"data/napcat-cache/{incoming_id}/qrcode.png"
 
     feishu = candidate.setdefault("feishu", {})
     if isinstance(feishu, dict) and isinstance(feishu.get("bots"), list):
@@ -936,6 +981,7 @@ def register_gui(
                 raise HTTPException(status_code=404, detail="未知 QQ Bot")
         results = []
         for bot in bots:
+            onebot_token_available = bool(resolve_secret(bot.access_token, bot.access_token_file))
             try:
                 webui_token_available = bool(get_container().napcat_clients[bot.id].token())
             except Exception:
@@ -945,6 +991,15 @@ def register_gui(
                 napcat_status: dict[str, Any] = {"ok": True, "enabled": False}
                 connection_state = "disabled"
                 connection_message = "QQ Bot 已停用"
+            elif not onebot_token_available and not webui_token_available:
+                onebot_status = {"ok": False, "error": "OneBot Token 尚未初始化"}
+                napcat_status = {"ok": False, "error": "NapCat WebUI Token 尚未初始化"}
+                connection_state = "credentials_missing"
+                connection_message = (
+                    "内置 NapCat Secret 尚未初始化，请重新运行 Compose 初始化服务"
+                    if bot.connection_mode == "bundled_napcat"
+                    else "外部 OneBot/NapCat 尚未配置 Token 与独立连接参数"
+                )
             else:
                 onebot_result, napcat_result = await asyncio.gather(
                     get_container().qq_clients[bot.id].doctor(),
@@ -981,15 +1036,21 @@ def register_gui(
                     "id": bot.id,
                     "name": bot.name,
                     "enabled": bot.enabled,
+                    "connection_mode": bot.connection_mode,
                     "status": onebot_status,
                     "onebot_status": onebot_status,
                     "napcat_status": napcat_status,
                     "connection_state": connection_state,
                     "connection_message": connection_message,
-                    "webhook_url": f"/webhooks/onebot/{bot.id}",
+                    "webhook_url": (
+                        "/webhooks/onebot"
+                        if bot.connection_mode == "bundled_napcat"
+                        else f"/webhooks/onebot/{bot.id}"
+                    ),
                     "webui_public_url": bot.webui_public_url,
                     "webui_public_port": bot.webui_public_port,
                     "qrcode_available": await asyncio.to_thread(Path(bot.qrcode_path).is_file),
+                    "onebot_token_available": onebot_token_available,
                     "webui_token_available": webui_token_available,
                     "assignment_count": len(get_settings().bot_group_ids(bot.id)),
                 }

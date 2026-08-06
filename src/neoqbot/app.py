@@ -269,18 +269,18 @@ def create_app(settings: Settings | None = None, config_path: str | Path | None 
             raise HTTPException(status_code=503, detail="Event queue is full") from exc
         return {"accepted": True, "bot_id": bot.id}
 
-    @app.post("/webhooks/onebot", status_code=status.HTTP_202_ACCEPTED)
+    @app.post("/webhooks/onebot", status_code=status.HTTP_200_OK)
     async def onebot_webhook(
         request: Request,
         x_signature: Annotated[str | None, Header()] = None,
         authorization: Annotated[str | None, Header()] = None,
     ) -> dict[str, object]:
-        bot = resolved_settings.qq_bot()
+        bot = resolved_settings.bundled_qq_bot() or resolved_settings.qq_bot()
         if bot is None:
             raise HTTPException(status_code=503, detail="No QQ Bot is configured")
         return await accept_onebot_webhook(bot.id, request, x_signature, authorization)
 
-    @app.post("/webhooks/onebot/{bot_id}", status_code=status.HTTP_202_ACCEPTED)
+    @app.post("/webhooks/onebot/{bot_id}", status_code=status.HTTP_200_OK)
     async def onebot_bot_webhook(
         bot_id: str,
         request: Request,

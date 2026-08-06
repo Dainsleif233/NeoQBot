@@ -33,6 +33,8 @@ qq:
     - id: default
       name: 默认 QQ Bot
       enabled: false
+      # Compose 内置 NapCat 只能由一个 Bot 使用；其他账号改为 external 并配置独立实例。
+      connection_mode: bundled_napcat
       # Compose 内使用服务名；Windows 本地直连外部 NapCat 时可改为 http://127.0.0.1:3000。
       onebot_base_url: http://qq-bridge:3000
       # Compose 自动生成随机 Token 并写入持久卷；文件存在时优先于明文值。

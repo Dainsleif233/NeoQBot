@@ -140,6 +140,12 @@ credentials in transit: restrict source addresses at the firewall and deploy HTT
 possible. Set `NEOQBOT_GUI_BIND_IP=127.0.0.1` in `.env` when public access is unnecessary. NapCat
 port `6099` and OneBot port `3000` remain inside the Compose network and must not be published.
 
+The bundled `qq-bridge` represents one real QQ account only. The first compatible QQ Bot in the
+orchestration workspace automatically uses **Bundled NapCat** and reuses its persistent secrets and
+login session. Every additional QQ Bot must use **External OneBot / NapCat** with an independent
+adapter instance. Bundled NapCat posts to `/webhooks/onebot`, so it no longer depends on a fixed
+`default` Bot ID.
+
 On the first start, Compose creates the persistent configuration from `config.example.yaml` embedded
 in the image. No host bind mount is required, so Git-based platforms and remote Docker daemons work
 without an untracked `config.yaml`. Apply deployment-specific overrides through `.env` or platform

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from datetime import UTC, datetime
@@ -22,6 +23,7 @@ from neoqbot.gui import (
     _validate_bot_identity_changes,
 )
 from neoqbot.models import GroupMessage
+from neoqbot.napcat import initialize_napcat
 from neoqbot.runtime import Runtime
 from neoqbot.services import ModerationService
 
@@ -36,6 +38,7 @@ def assignment_settings() -> Settings:
                         "id": "worker",
                         "name": "Worker",
                         "enabled": True,
+                        "connection_mode": "external",
                         "administrator_qq_ids": ["10001"],
                     }
                 ]
@@ -98,6 +101,56 @@ def assignment_settings() -> Settings:
 
 
 class SettingsAssignmentTests(unittest.TestCase):
+    def test_legacy_first_bot_adopts_the_bundled_napcat_identity(self) -> None:
+        settings = Settings.model_validate(
+            {
+                "qq": {
+                    "bots": [
+                        {
+                            "id": "mualliance1",
+                            "name": "Primary",
+                            "enabled": True,
+                            "access_token_file": "data/secrets/qq/mualliance1/onebot.token",
+                            "webui_token_file": "data/secrets/qq/mualliance1/webui.token",
+                        },
+                        {
+                            "id": "mualliance2",
+                            "name": "Secondary",
+                            "enabled": True,
+                            "access_token_file": "data/secrets/qq/mualliance2/onebot.token",
+                            "webui_token_file": "data/secrets/qq/mualliance2/webui.token",
+                        },
+                    ]
+                }
+            }
+        )
+
+        primary, secondary = settings.effective_qq_bots()
+
+        self.assertEqual(primary.connection_mode, "bundled_napcat")
+        self.assertEqual(primary.onebot_base_url, "http://qq-bridge:3000")
+        self.assertEqual(primary.access_token_file, "data/secrets/napcat-onebot.token")
+        self.assertEqual(primary.webui_token_file, "data/secrets/napcat-webui.token")
+        self.assertEqual(primary.qrcode_path, "/app/napcat-cache/qrcode.png")
+        self.assertEqual(secondary.connection_mode, "external")
+        self.assertEqual(
+            secondary.qrcode_path,
+            "data/napcat-cache/mualliance2/qrcode.png",
+        )
+
+    def test_only_one_bot_can_use_the_bundled_napcat_sidecar(self) -> None:
+        with self.assertRaisesRegex(ValidationError, "只能绑定一个 QQ Bot"):
+            Settings.model_validate(
+                {
+                    "qq": {
+                        "bots": [
+                            {"id": "first", "connection_mode": "bundled_napcat"},
+                            {"id": "second", "connection_mode": "bundled_napcat"},
+                        ]
+                    }
+                }
+            )
+
     def test_tasks_are_scoped_to_each_bot_group_edge(self) -> None:
         settings = assignment_settings()
 
@@ -349,7 +402,7 @@ class GuiDomainIsolationTests(unittest.TestCase):
         self.assertEqual(merged["qq"]["bots"][0]["access_token"], "stable-token")
         self.assertEqual(merged["qq"]["bots"][0]["webui_token"], "stable-webui-token")
 
-    def test_locked_new_bot_receives_an_independent_secret_directory(self) -> None:
+    def test_locked_new_external_bot_keeps_enabled_state_and_safe_connection(self) -> None:
         current = assignment_settings()
         submitted = current.redacted_dict()
         submitted["qq"]["bots"].append(
@@ -357,6 +410,7 @@ class GuiDomainIsolationTests(unittest.TestCase):
                 "id": "second",
                 "name": "Second",
                 "enabled": True,
+                "connection_mode": "external",
                 "onebot_base_url": "http://unsafe.example",
                 "access_token_file": "shared.token",
                 "webui_token_file": "shared-webui.token",
@@ -366,9 +420,58 @@ class GuiDomainIsolationTests(unittest.TestCase):
         merged = _preserve_masked_secrets(submitted, current)
         new_bot = merged["qq"]["bots"][1]
 
-        self.assertFalse(new_bot["enabled"])
+        self.assertTrue(new_bot["enabled"])
+        self.assertEqual(new_bot["onebot_base_url"], "http://127.0.0.1:3000")
         self.assertEqual(new_bot["access_token_file"], "data/secrets/qq/second/onebot.token")
         self.assertEqual(new_bot["webui_token_file"], "data/secrets/qq/second/webui.token")
+
+    def test_locked_first_bot_can_bind_the_bundled_napcat_sidecar(self) -> None:
+        current = Settings.model_validate({"qq": {"bots": []}, "feishu": {"bots": []}})
+        submitted = current.redacted_dict()
+        submitted["qq"]["bots"].append(
+            {
+                "id": "primary",
+                "name": "Primary",
+                "enabled": True,
+                "connection_mode": "bundled_napcat",
+            }
+        )
+
+        merged = _preserve_masked_secrets(submitted, current)
+        new_bot = Settings.model_validate(merged).qq_bot("primary")
+
+        self.assertIsNotNone(new_bot)
+        self.assertTrue(new_bot.enabled)
+        self.assertEqual(new_bot.access_token_file, "data/secrets/napcat-onebot.token")
+        self.assertEqual(new_bot.webui_token_file, "data/secrets/napcat-webui.token")
+
+    def test_locked_bundled_bot_switches_to_independent_external_paths(self) -> None:
+        current = Settings.model_validate(
+            {
+                "qq": {
+                    "bots": [
+                        {
+                            "id": "primary",
+                            "enabled": True,
+                            "connection_mode": "bundled_napcat",
+                        }
+                    ]
+                }
+            }
+        )
+        submitted = current.redacted_dict()
+        submitted["qq"]["bots"][0]["connection_mode"] = "external"
+
+        merged = _preserve_masked_secrets(submitted, current)
+        switched = Settings.model_validate(merged).qq_bot("primary")
+
+        self.assertIsNotNone(switched)
+        self.assertTrue(switched.enabled)
+        self.assertEqual(switched.connection_mode, "external")
+        self.assertEqual(switched.onebot_base_url, "http://127.0.0.1:3000")
+        self.assertEqual(switched.access_token_file, "data/secrets/qq/primary/onebot.token")
+        self.assertEqual(switched.webui_token_file, "data/secrets/qq/primary/webui.token")
+        self.assertEqual(switched.qrcode_path, "data/napcat-cache/primary/qrcode.png")
 
     def test_bot_id_cannot_be_silently_renamed_through_the_api(self) -> None:
         current = assignment_settings()
@@ -436,7 +539,110 @@ class GuiDomainIsolationTests(unittest.TestCase):
         )
 
 
+class NapCatInitializationTests(unittest.TestCase):
+    def test_bundled_napcat_posts_to_the_identity_independent_webhook(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            napcat_config = Path(directory) / "napcat-config"
+            napcat_config.mkdir()
+            (napcat_config / "onebot11.json").write_text(
+                json.dumps(
+                    {
+                        "network": {
+                            "httpClients": [
+                                {
+                                    "name": "neoqbot-events",
+                                    "enable": True,
+                                    "url": "http://neoqbot:8080/webhooks/onebot/default",
+                                }
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            result = initialize_napcat(
+                napcat_config,
+                Path(directory) / "secrets",
+            )
+            onebot = json.loads(Path(result["onebot_config"]).read_text(encoding="utf-8"))
+
+        event_client = next(
+            item for item in onebot["network"]["httpClients"] if item["name"] == "neoqbot-events"
+        )
+        self.assertEqual(event_client["url"], "http://neoqbot:8080/webhooks/onebot")
+        self.assertEqual(
+            sum(item.get("name") == "neoqbot-events" for item in onebot["network"]["httpClients"]),
+            1,
+        )
+
+
 class WebhookIsolationTests(unittest.TestCase):
+    def test_identity_independent_webhook_routes_to_the_bundled_bot(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            settings = Settings.model_validate(
+                {
+                    "app": {
+                        "database_path": str(Path(directory) / "bundled-webhook.db"),
+                        "message_archive_path": str(Path(directory) / "messages"),
+                    },
+                    "gui": {"enabled": False},
+                    "qq": {
+                        "bots": [
+                            {
+                                "id": "mualliance1",
+                                "name": "Bundled",
+                                "enabled": True,
+                                "connection_mode": "bundled_napcat",
+                                "administrator_qq_ids": ["10001"],
+                            }
+                        ]
+                    },
+                    "feishu": {"bots": []},
+                    "orchestration": {
+                        "resources": [
+                            {
+                                "id": "main-group",
+                                "kind": "qq_group",
+                                "name": "Main",
+                                "external_id": "100",
+                            }
+                        ],
+                        "edges": [
+                            {
+                                "id": "bundled-main",
+                                "source": "qq-bot:mualliance1",
+                                "target": "main-group",
+                                "relation": "manages",
+                            }
+                        ],
+                    },
+                }
+            )
+            app = create_app(settings)
+            submit = AsyncMock()
+            app.state.container.runtime.submit = submit
+
+            with (
+                patch("neoqbot.app.resolve_secret", return_value="test-onebot-token"),
+                TestClient(app) as client,
+            ):
+                response = client.post(
+                    "/webhooks/onebot",
+                    headers={"Authorization": "Bearer test-onebot-token"},
+                    json={
+                        "post_type": "message",
+                        "message_type": "group",
+                        "group_id": 100,
+                        "message_id": 1,
+                        "user_id": 2,
+                        "message": "bundled event",
+                    },
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["bot_id"], "mualliance1")
+        submit.assert_awaited_once()
+
     def test_unmanaged_group_event_is_not_submitted_to_runtime(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             config = assignment_settings().model_dump(mode="json")
@@ -463,9 +669,9 @@ class WebhookIsolationTests(unittest.TestCase):
                     },
                 )
 
-            self.assertEqual(response.status_code, 202)
-            self.assertEqual(response.json()["reason"], "unmanaged_group")
-            submit.assert_not_awaited()
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["reason"], "unmanaged_group")
+        submit.assert_not_awaited()
 
 
 class _MessageDatabase:

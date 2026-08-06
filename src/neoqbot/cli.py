@@ -54,7 +54,7 @@ def _parser() -> argparse.ArgumentParser:
         "--webhook-url",
         default=os.getenv(
             "NEOQBOT_NAPCAT_WEBHOOK_URL",
-            "http://neoqbot:8080/webhooks/onebot/default",
+            "http://neoqbot:8080/webhooks/onebot",
         ),
     )
     return parser

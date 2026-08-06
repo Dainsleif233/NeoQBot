@@ -607,6 +607,7 @@
     if (bot.connection_state === "qq_offline") return "QQ 登录态已离线，请刷新二维码重新登录。";
     if (bot.connection_state === "waiting_for_scan") return "NapCat 已连接，等待扫码确认…";
     if (bot.connection_state === "disabled") return "此 QQ Bot 已停用。";
+    if (bot.connection_state === "credentials_missing") return bot.connection_message;
     return "NapCat 无法连接：" + (napcat.error || onebot.error || "请检查 qq-bridge 容器");
   }
 
@@ -1613,24 +1614,41 @@
     activateSettingsStep(settingsSteps[Math.min(settingsSteps.length - 1, index + 1)]);
   });
 
+  function defaultExternalQQConnection(botId) {
+    var safeBotId = botId || "new-bot";
+    var secretRoot = "data/secrets/qq/" + safeBotId;
+    return {
+      onebot_base_url: "http://127.0.0.1:3000",
+      access_token: "",
+      access_token_file: secretRoot + "/onebot.token",
+      webhook_secret: "",
+      webui_base_url: "http://127.0.0.1:6099",
+      webui_token: "",
+      webui_token_file: secretRoot + "/webui.token",
+      qrcode_path: "data/napcat-cache/" + safeBotId + "/qrcode.png"
+    };
+  }
+
   function defaultQQBot(index, requestedId) {
     var botId = requestedId || "qq-bot-" + (index + 1);
-    var secretRoot = "/app/data/secrets/qq/" + botId;
+    var bundled = index === 0;
+    var externalConnection = defaultExternalQQConnection(botId);
     return {
       id: botId,
       name: "QQ Bot " + (index + 1),
       enabled: false,
-      onebot_base_url: "http://qq-bridge:3000",
+      connection_mode: bundled ? "bundled_napcat" : "external",
+      onebot_base_url: bundled ? "http://qq-bridge:3000" : externalConnection.onebot_base_url,
       access_token: "",
-      access_token_file: secretRoot + "/onebot.token",
+      access_token_file: bundled ? "data/secrets/napcat-onebot.token" : externalConnection.access_token_file,
       webhook_secret: "",
       request_timeout_seconds: 15,
-      webui_base_url: "http://qq-bridge:6099",
+      webui_base_url: bundled ? "http://qq-bridge:6099" : externalConnection.webui_base_url,
       webui_token: "",
-      webui_token_file: secretRoot + "/webui.token",
+      webui_token_file: bundled ? "data/secrets/napcat-webui.token" : externalConnection.webui_token_file,
       webui_public_url: "",
       webui_public_port: 6099,
-      qrcode_path: "/app/napcat-cache/qrcode.png",
+      qrcode_path: bundled ? "/app/napcat-cache/qrcode.png" : externalConnection.qrcode_path,
       administrator_qq_ids: [],
       announcement_actions: ["get_group_notice", "_get_group_notice"],
       search_feishu_bot_id: ""
@@ -1684,17 +1702,64 @@
     var dialogState = state.nodeDialog;
     if (!dialogState || dialogState.mode !== "create" || dialogState.kind !== "qq_bot") return;
     var previousBotId = dialogState.autoSecretBotId || dialogState.draft.id;
-    var previousRoot = "/app/data/secrets/qq/" + previousBotId;
-    var nextRoot = "/app/data/secrets/qq/" + nextBotId;
+    var previousRoot = "data/secrets/qq/" + previousBotId;
+    var nextRoot = "data/secrets/qq/" + nextBotId;
     var accessTokenFile = nodeDetailControl("access_token_file");
     var webuiTokenFile = nodeDetailControl("webui_token_file");
+    var qrcodePath = nodeDetailControl("qrcode_path");
     if (accessTokenFile.value.trim() === previousRoot + "/onebot.token") {
       accessTokenFile.value = nextRoot + "/onebot.token";
     }
     if (webuiTokenFile.value.trim() === previousRoot + "/webui.token") {
       webuiTokenFile.value = nextRoot + "/webui.token";
     }
+    if (qrcodePath.value.trim() === "data/napcat-cache/" + previousBotId + "/qrcode.png") {
+      qrcodePath.value = "data/napcat-cache/" + nextBotId + "/qrcode.png";
+    }
     dialogState.autoSecretBotId = nextBotId;
+  }
+
+  function applyQQConnectionMode(preserveExternalValues) {
+    var dialogState = state.nodeDialog;
+    if (!dialogState || dialogState.kind !== "qq_bot") return;
+    var mode = nodeDetailControl("connection_mode").value;
+    var connectionFields = [
+      "onebot_base_url", "access_token", "access_token_file", "webhook_secret",
+      "webui_base_url", "webui_token", "webui_token_file", "qrcode_path"
+    ];
+    if (preserveExternalValues && dialogState.lastConnectionMode === "external") {
+      dialogState.externalConnectionValues = {};
+      connectionFields.forEach(function (name) {
+        dialogState.externalConnectionValues[name] = nodeDetailControl(name).value;
+      });
+    }
+    if (mode === "bundled_napcat") {
+      setNodeDetailValue("onebot_base_url", "http://qq-bridge:3000");
+      setNodeDetailValue("access_token", "");
+      setNodeDetailValue("access_token_file", "data/secrets/napcat-onebot.token");
+      setNodeDetailValue("webhook_secret", "");
+      setNodeDetailValue("webui_base_url", "http://qq-bridge:6099");
+      setNodeDetailValue("webui_token", "");
+      setNodeDetailValue("webui_token_file", "data/secrets/napcat-webui.token");
+      setNodeDetailValue("qrcode_path", "/app/napcat-cache/qrcode.png");
+    } else if (preserveExternalValues && dialogState.externalConnectionValues) {
+      Object.keys(dialogState.externalConnectionValues).forEach(function (name) {
+        setNodeDetailValue(name, dialogState.externalConnectionValues[name]);
+      });
+    } else if (mode === "external" && dialogState.lastConnectionMode === "bundled_napcat") {
+      var externalValues = defaultExternalQQConnection(nodeDetailControl("id").value.trim());
+      Object.keys(externalValues).forEach(function (name) {
+        setNodeDetailValue(name, externalValues[name]);
+      });
+    }
+    connectionFields.forEach(function (name) {
+      var control = nodeDetailControl(name);
+      control.disabled = mode === "bundled_napcat" || !state.orchestrationSensitiveEditsAllowed;
+      control.title = mode === "bundled_napcat"
+        ? "内置 NapCat 的地址、Token 文件和二维码路径由 Compose 自动维护"
+        : "";
+    });
+    dialogState.lastConnectionMode = mode;
   }
 
   function newNodeDraft(kind) {
@@ -1735,6 +1800,7 @@
   function qqNodeDetailHtml(existing) {
     return nodeDetailCommonHtml(existing) + [
       '<section class="node-detail-section"><div class="node-detail-section-title"><span>OneBot 11</span><h3>QQ 连接</h3></div><div class="form-grid">',
+      '<label class="span-2">连接方式<select data-node-field="connection_mode"><option value="bundled_napcat">内置 NapCat（Compose）</option><option value="external">外部 OneBot / NapCat</option></select><small>Compose 内置侧车只支持一个真实 QQ 账号；其他 Bot 必须使用独立外部实例。</small></label>',
       '<label class="span-2">OneBot Base URL<input data-node-field="onebot_base_url" data-sensitive></label>',
       '<label>Access Token<input data-node-field="access_token" data-sensitive type="password" placeholder="留空保持原值"></label>',
       '<label>Token 文件<input data-node-field="access_token_file" data-sensitive></label>',
@@ -1807,6 +1873,7 @@
     setNodeDetailValue("name", draft.name);
     setNodeDetailValue("enabled", draft.enabled);
     if (nodeKind === "qq_bot") {
+      setNodeDetailValue("connection_mode", draft.connection_mode || "external");
       ["onebot_base_url", "access_token_file", "request_timeout_seconds", "webui_base_url", "webui_token_file", "webui_public_url", "webui_public_port", "qrcode_path"].forEach(function (name) { setNodeDetailValue(name, draft[name]); });
       setNodeDetailValue("access_token", "");
       setNodeDetailValue("webui_token", "");
@@ -1818,6 +1885,17 @@
           syncNewQQSecretPaths(this.value.trim());
         });
       }
+      var bundledOwner = state.config.qq.bots.find(function (bot) {
+        return bot.connection_mode === "bundled_napcat" && (!existing || bot.id !== draft.id);
+      });
+      var bundledOption = nodeDetailControl("connection_mode").querySelector('option[value="bundled_napcat"]');
+      bundledOption.disabled = Boolean(bundledOwner);
+      if (bundledOwner) {
+        bundledOption.textContent = "内置 NapCat（已由 " + bundledOwner.name + " 使用）";
+      }
+      nodeDetailControl("connection_mode").addEventListener("change", function () {
+        applyQQConnectionMode(true);
+      });
       var searchSelect = nodeDetailControl("search_feishu_bot_id");
       state.config.feishu.bots.forEach(function (bot) {
         var option = document.createElement("option");
@@ -1826,6 +1904,7 @@
         searchSelect.appendChild(option);
       });
       setNodeDetailValue("search_feishu_bot_id", draft.search_feishu_bot_id || "");
+      applyQQConnectionMode(false);
     } else if (nodeKind === "feishu_bot") {
       ["driver", "executable", "timeout_seconds", "max_search_results", "archive_payload_stdin"].forEach(function (name) { setNodeDetailValue(name, draft[name]); });
       setNodeDetailValue("search_prefixes", listValue(draft.search_prefixes));
@@ -1865,6 +1944,7 @@
     var nextNodeId = prefix + draft.id;
     if (nextNodeId !== dialogState.originalNodeId && graphNode(nextNodeId)) throw new Error("内部 ID 已被其他节点使用");
     if (dialogState.kind === "qq_bot") {
+      draft.connection_mode = nodeDetailControl("connection_mode").value;
       syncNewQQSecretPaths(draft.id);
       draft.onebot_base_url = nodeDetailControl("onebot_base_url").value.trim();
       draft.access_token = nodeDetailControl("access_token").value || draft.access_token || "";
