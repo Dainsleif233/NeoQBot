@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS group_messages (
     message_id TEXT NOT NULL,
     group_id TEXT NOT NULL,
     user_id TEXT NOT NULL,
+    sender_name TEXT NOT NULL DEFAULT '',
     text TEXT NOT NULL,
     sent_at TEXT NOT NULL,
     raw_event_json TEXT NOT NULL,
@@ -82,6 +83,8 @@ CREATE TABLE IF NOT EXISTS announcements (
     is_deleted INTEGER NOT NULL DEFAULT 0,
     deleted_at TEXT,
     source_bot_ids_json TEXT NOT NULL DEFAULT '[]',
+    source_announcement_ids_json TEXT NOT NULL DEFAULT '[]',
+    published_slot TEXT NOT NULL DEFAULT '',
     UNIQUE(bot_id, group_id, announcement_id, content_hash)
 );
 CREATE INDEX IF NOT EXISTS idx_announcements_sync_status
@@ -157,6 +160,9 @@ class Database:
                 connection.execute(
                     "ALTER TABLE admin_users ADD COLUMN role TEXT NOT NULL DEFAULT 'admin'"
                 )
+            self._ensure_column(
+                connection, "group_messages", "sender_name", "TEXT NOT NULL DEFAULT ''"
+            )
             self._ensure_column(connection, "announcements", "sync_claimed_at", "TEXT")
             self._ensure_column(
                 connection, "announcements", "is_current", "INTEGER NOT NULL DEFAULT 1"
@@ -170,6 +176,18 @@ class Database:
                 "announcements",
                 "source_bot_ids_json",
                 "TEXT NOT NULL DEFAULT '[]'",
+            )
+            self._ensure_column(
+                connection,
+                "announcements",
+                "source_announcement_ids_json",
+                "TEXT NOT NULL DEFAULT '[]'",
+            )
+            self._ensure_column(
+                connection,
+                "announcements",
+                "published_slot",
+                "TEXT NOT NULL DEFAULT ''",
             )
             self._migrate_announcement_archive(connection)
 
@@ -192,22 +210,54 @@ class Database:
             pass
         return {item for item in bot_ids if item}
 
+    @staticmethod
+    def _source_announcement_ids(row: sqlite3.Row) -> set[str]:
+        announcement_ids = {str(row["announcement_id"])}
+        try:
+            announcement_ids.update(
+                str(item) for item in json.loads(row["source_announcement_ids_json"] or "[]")
+            )
+        except (json.JSONDecodeError, TypeError):
+            pass
+        return {item for item in announcement_ids if item}
+
+    @staticmethod
+    def _announcement_published_slot(value: datetime | str | None) -> str:
+        if value is None or value == "":
+            return ""
+        try:
+            published_at = value if isinstance(value, datetime) else datetime.fromisoformat(value)
+        except (TypeError, ValueError):
+            return ""
+        if published_at.tzinfo is None:
+            published_at = published_at.replace(tzinfo=UTC)
+        return published_at.astimezone(UTC).replace(second=0, microsecond=0).isoformat()
+
     def _migrate_announcement_archive(self, connection: sqlite3.Connection) -> None:
         """Collapse historical cross-Bot duplicates before enforcing group-level identity."""
         connection.execute("DROP INDEX IF EXISTS uq_announcements_group_version")
+        connection.execute("DROP INDEX IF EXISTS uq_announcements_group_published_content")
         rows = connection.execute("SELECT * FROM announcements ORDER BY id ASC").fetchall()
         grouped: dict[tuple[str, str, str], list[sqlite3.Row]] = {}
         for row in rows:
             canonical_hash = self._announcement_content_hash(str(row["title"]), str(row["content"]))
-            key = (str(row["group_id"]), str(row["announcement_id"]), canonical_hash)
+            published_slot = self._announcement_published_slot(row["published_at"])
+            source_identity = (
+                f"published:{published_slot}"
+                if published_slot
+                else f"source:{row['announcement_id']}"
+            )
+            key = (str(row["group_id"]), canonical_hash, source_identity)
             grouped.setdefault(key, []).append(row)
 
         status_priority = {"synced": 4, "pending": 3, "failed": 2, "syncing": 1}
-        for (_, _, canonical_hash), duplicates in grouped.items():
+        for (_, canonical_hash, _), duplicates in grouped.items():
             keeper = duplicates[0]
             bot_ids: set[str] = set()
+            announcement_ids: set[str] = set()
             for row in duplicates:
                 bot_ids.update(self._source_bot_ids(row))
+                announcement_ids.update(self._source_announcement_ids(row))
             status = max(
                 (str(row["sync_status"]) for row in duplicates),
                 key=lambda value: status_priority.get(value, 0),
@@ -230,7 +280,8 @@ class Database:
                 SET content_hash = ?, author_id = ?, published_at = ?, source_payload_json = ?,
                     first_seen_at = ?, last_seen_at = ?, sync_status = ?,
                     sync_attempts = ?, sync_error = ?, sync_claimed_at = NULL,
-                    is_deleted = ?, deleted_at = ?, source_bot_ids_json = ?
+                    is_deleted = ?, deleted_at = ?, source_bot_ids_json = ?,
+                    source_announcement_ids_json = ?, published_slot = ?
                 WHERE id = ?
                 """,
                 (
@@ -251,28 +302,35 @@ class Database:
                         default=None,
                     ),
                     json.dumps(sorted(bot_ids), ensure_ascii=False),
+                    json.dumps(sorted(announcement_ids), ensure_ascii=False),
+                    self._announcement_published_slot(min(published) if published else None),
                     int(keeper["id"]),
                 ),
             )
 
         connection.execute("UPDATE announcements SET is_current = 0")
         versions = connection.execute(
-            """
-            SELECT id, group_id, announcement_id FROM announcements
-            ORDER BY group_id, announcement_id, id DESC
-            """
+            "SELECT * FROM announcements ORDER BY group_id, id DESC"
         ).fetchall()
         current_keys: set[tuple[str, str]] = set()
         for row in versions:
-            key = (str(row["group_id"]), str(row["announcement_id"]))
-            if key in current_keys:
+            group_id = str(row["group_id"])
+            source_ids = self._source_announcement_ids(row)
+            if any((group_id, source_id) in current_keys for source_id in source_ids):
                 continue
-            current_keys.add(key)
+            current_keys.update((group_id, source_id) for source_id in source_ids)
             connection.execute("UPDATE announcements SET is_current = 1 WHERE id = ?", (row["id"],))
         connection.execute(
             """
             CREATE UNIQUE INDEX IF NOT EXISTS uq_announcements_group_version
             ON announcements(group_id, announcement_id, content_hash)
+            """
+        )
+        connection.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS uq_announcements_group_published_content
+            ON announcements(group_id, content_hash, published_slot)
+            WHERE published_slot != ''
             """
         )
         connection.execute(
@@ -342,14 +400,16 @@ class Database:
             cursor = connection.execute(
                 """
                 INSERT OR IGNORE INTO group_messages (
-                    bot_id, message_id, group_id, user_id, text, sent_at, raw_event_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    bot_id, message_id, group_id, user_id, sender_name, text,
+                    sent_at, raw_event_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     message.bot_id,
                     message.message_id,
                     message.group_id,
                     message.user_id,
+                    message.sender_name,
                     message.text,
                     message.sent_at.isoformat(),
                     json.dumps(message.raw_event, ensure_ascii=False),
@@ -381,6 +441,7 @@ class Database:
                 message_id=row["message_id"],
                 group_id=row["group_id"],
                 user_id=row["user_id"],
+                sender_name=row["sender_name"],
                 text=row["text"],
                 sent_at=datetime.fromisoformat(row["sent_at"]),
                 raw_event=json.loads(row["raw_event_json"]),
@@ -449,24 +510,48 @@ class Database:
     def upsert_announcement(self, announcement: Announcement) -> bool:
         now = utc_now().isoformat()
         content_hash = self._announcement_hash(announcement)
+        published_at = announcement.published_at.isoformat() if announcement.published_at else None
+        published_slot = self._announcement_published_slot(announcement.published_at)
         with self._lock, self._connect() as connection:
-            existing = connection.execute(
+            candidates = connection.execute(
                 """
                 SELECT * FROM announcements
-                WHERE group_id = ? AND announcement_id = ? AND content_hash = ?
+                WHERE group_id = ? AND content_hash = ?
                 """,
-                (announcement.group_id, announcement.announcement_id, content_hash),
-            ).fetchone()
+                (announcement.group_id, content_hash),
+            ).fetchall()
+            existing = next(
+                (
+                    row
+                    for row in candidates
+                    if published_slot and row["published_slot"] == published_slot
+                ),
+                None,
+            )
+            if existing is None:
+                existing = next(
+                    (
+                        row
+                        for row in candidates
+                        if announcement.announcement_id in self._source_announcement_ids(row)
+                    ),
+                    None,
+                )
             if existing is not None:
                 bot_ids = self._source_bot_ids(existing)
                 bot_ids.add(announcement.bot_id)
+                announcement_ids = self._source_announcement_ids(existing)
+                announcement_ids.add(announcement.announcement_id)
                 connection.execute(
                     """
                     UPDATE announcements
                     SET last_seen_at = ?, is_deleted = 0, deleted_at = NULL,
-                        source_bot_ids_json = ?,
+                        source_bot_ids_json = ?, source_announcement_ids_json = ?,
                         author_id = CASE WHEN author_id = '' THEN ? ELSE author_id END,
                         published_at = COALESCE(published_at, ?),
+                        published_slot = CASE
+                            WHEN published_slot = '' THEN ? ELSE published_slot
+                        END,
                         source_payload_json = CASE
                             WHEN source_payload_json IN ('', '{}', 'null') THEN ?
                             ELSE source_payload_json
@@ -476,37 +561,42 @@ class Database:
                     (
                         now,
                         json.dumps(sorted(bot_ids), ensure_ascii=False),
+                        json.dumps(sorted(announcement_ids), ensure_ascii=False),
                         announcement.author_id,
-                        announcement.published_at.isoformat()
-                        if announcement.published_at
-                        else None,
+                        published_at,
+                        published_slot,
                         json.dumps(announcement.source_payload, ensure_ascii=False),
                         int(existing["id"]),
                     ),
                 )
-                connection.execute(
-                    """
-                    UPDATE announcements SET is_deleted = 0, deleted_at = NULL
-                    WHERE group_id = ? AND announcement_id = ?
-                    """,
-                    (announcement.group_id, announcement.announcement_id),
-                )
                 return False
 
-            connection.execute(
-                """
-                UPDATE announcements SET is_current = 0
-                WHERE group_id = ? AND announcement_id = ?
-                """,
-                (announcement.group_id, announcement.announcement_id),
-            )
+            previous_rows = [
+                row
+                for row in connection.execute(
+                    "SELECT * FROM announcements WHERE group_id = ? AND is_current = 1",
+                    (announcement.group_id,),
+                ).fetchall()
+                if announcement.announcement_id in self._source_announcement_ids(row)
+            ]
+            previous_versions = [int(row["id"]) for row in previous_rows]
+            source_announcement_ids = {announcement.announcement_id}
+            for row in previous_rows:
+                source_announcement_ids.update(self._source_announcement_ids(row))
+            if previous_versions:
+                placeholders = ", ".join("?" for _ in previous_versions)
+                connection.execute(
+                    f"UPDATE announcements SET is_current = 0 WHERE id IN ({placeholders})",
+                    tuple(previous_versions),
+                )
             cursor = connection.execute(
                 """
                 INSERT OR IGNORE INTO announcements (
                     bot_id, announcement_id, group_id, content_hash, title, content,
                     author_id, published_at, source_payload_json, first_seen_at, last_seen_at,
-                    is_current, is_deleted, source_bot_ids_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?)
+                    is_current, is_deleted, source_bot_ids_json,
+                    source_announcement_ids_json, published_slot
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?)
                 """,
                 (
                     announcement.bot_id,
@@ -516,50 +606,77 @@ class Database:
                     announcement.title,
                     announcement.content,
                     announcement.author_id,
-                    announcement.published_at.isoformat() if announcement.published_at else None,
+                    published_at,
                     json.dumps(announcement.source_payload, ensure_ascii=False),
                     now,
                     now,
                     json.dumps([announcement.bot_id], ensure_ascii=False),
+                    json.dumps(sorted(source_announcement_ids), ensure_ascii=False),
+                    published_slot,
                 ),
             )
+            if cursor.rowcount == 0:
+                conflict = connection.execute(
+                    """
+                    SELECT * FROM announcements
+                    WHERE group_id = ? AND content_hash = ?
+                      AND (
+                        (? != '' AND published_slot = ?)
+                        OR announcement_id = ?
+                      )
+                    ORDER BY id DESC LIMIT 1
+                    """,
+                    (
+                        announcement.group_id,
+                        content_hash,
+                        published_slot,
+                        published_slot,
+                        announcement.announcement_id,
+                    ),
+                ).fetchone()
+                if conflict is not None:
+                    bot_ids = self._source_bot_ids(conflict) | {announcement.bot_id}
+                    announcement_ids = self._source_announcement_ids(conflict) | {
+                        announcement.announcement_id
+                    }
+                    connection.execute(
+                        """
+                        UPDATE announcements
+                        SET last_seen_at = ?, is_deleted = 0, deleted_at = NULL,
+                            source_bot_ids_json = ?, source_announcement_ids_json = ?
+                        WHERE id = ?
+                        """,
+                        (
+                            now,
+                            json.dumps(sorted(bot_ids), ensure_ascii=False),
+                            json.dumps(sorted(announcement_ids), ensure_ascii=False),
+                            int(conflict["id"]),
+                        ),
+                    )
             return cursor.rowcount == 1
 
     def reconcile_announcements(self, group_id: str, seen_ids: set[str]) -> int:
         """Mark announcements missing from a successful full fetch without deleting the archive."""
         now = utc_now().isoformat()
         with self._lock, self._connect() as connection:
-            conditions = ["group_id = ?", "is_deleted = 0"]
-            values: list[object] = [group_id]
-            if seen_ids:
-                placeholders = ", ".join("?" for _ in seen_ids)
-                conditions.append(f"announcement_id NOT IN ({placeholders})")
-                values.extend(sorted(seen_ids))
-            ids = connection.execute(
-                "SELECT DISTINCT announcement_id FROM announcements WHERE "
-                + " AND ".join(conditions),
-                tuple(values),
+            rows = connection.execute(
+                "SELECT * FROM announcements WHERE group_id = ?", (group_id,)
             ).fetchall()
-            if ids:
-                deleted_ids = [str(row["announcement_id"]) for row in ids]
-                placeholders = ", ".join("?" for _ in deleted_ids)
-                connection.execute(
-                    f"""
-                    UPDATE announcements SET is_deleted = 1, deleted_at = ?
-                    WHERE group_id = ? AND announcement_id IN ({placeholders})
-                    """,
-                    (now, group_id, *deleted_ids),
-                )
-            if seen_ids:
-                placeholders = ", ".join("?" for _ in seen_ids)
-                connection.execute(
-                    f"""
-                    UPDATE announcements SET is_deleted = 0, deleted_at = NULL
-                    WHERE group_id = ? AND announcement_id IN ({placeholders})
-                    """,
-                    (group_id, *sorted(seen_ids)),
-                )
-            return len(ids)
+            deleted_notices: set[str] = set()
+            for row in rows:
+                is_seen = bool(self._source_announcement_ids(row) & seen_ids)
+                if is_seen:
+                    connection.execute(
+                        "UPDATE announcements SET is_deleted = 0, deleted_at = NULL WHERE id = ?",
+                        (int(row["id"]),),
+                    )
+                elif not bool(row["is_deleted"]):
+                    deleted_notices.add(str(row["announcement_id"]))
+                    connection.execute(
+                        "UPDATE announcements SET is_deleted = 1, deleted_at = ? WHERE id = ?",
+                        (now, int(row["id"])),
+                    )
+            return len(deleted_notices)
 
     def pending_announcements(
         self, limit: int = 100, group_id: str | None = None, bot_id: str | None = None
@@ -987,7 +1104,7 @@ class Database:
                 "group_messages",
                 "sent_at",
                 ("raw_event_json",),
-                ("group_id", "user_id", "text", "message_id"),
+                ("group_id", "user_id", "sender_name", "text", "message_id"),
             ),
             "moderation": (
                 "moderation_runs",
@@ -998,7 +1115,11 @@ class Database:
             "announcements": (
                 "announcements",
                 "last_seen_at",
-                ("source_payload_json", "source_bot_ids_json"),
+                (
+                    "source_payload_json",
+                    "source_bot_ids_json",
+                    "source_announcement_ids_json",
+                ),
                 ("group_id", "title", "content", "announcement_id", "sync_status"),
             ),
             "audit": (

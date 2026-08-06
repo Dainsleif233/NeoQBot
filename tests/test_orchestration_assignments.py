@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -14,6 +14,8 @@ from pydantic import ValidationError
 from neoqbot.app import create_app
 from neoqbot.auth import GuiSession
 from neoqbot.config import Settings
+from neoqbot.database import Database
+from neoqbot.events import EventHandler
 from neoqbot.gui import (
     ORCHESTRATION_SETTINGS_SECTIONS,
     PLATFORM_SETTINGS_SECTIONS,
@@ -22,7 +24,7 @@ from neoqbot.gui import (
     _preserve_masked_secrets,
     _validate_bot_identity_changes,
 )
-from neoqbot.models import GroupMessage
+from neoqbot.models import GroupMessage, ModerationResult
 from neoqbot.napcat import initialize_napcat
 from neoqbot.runtime import Runtime
 from neoqbot.services import ModerationService
@@ -66,7 +68,7 @@ def assignment_settings() -> Settings:
                         "relation": "observes",
                         "tasks": {
                             "message_detection": {
-                                "record_only": True,
+                                "record": True,
                                 "interval_minutes": 60,
                             }
                         },
@@ -82,8 +84,7 @@ def assignment_settings() -> Settings:
                                 "minimum_confidence": 0.93,
                             },
                             "message_detection": {
-                                "analyze": True,
-                                "handle": True,
+                                "scheduled_analysis": True,
                                 "interval_minutes": 15,
                                 "window_minutes": 10,
                                 "risk_threshold": 0.82,
@@ -161,11 +162,11 @@ class SettingsAssignmentTests(unittest.TestCase):
         self.assertIsNotNone(analyze)
         assert record is not None
         assert analyze is not None
-        self.assertTrue(record.tasks.message_detection.record_only)
-        self.assertFalse(record.tasks.message_detection.analyze)
+        self.assertTrue(record.tasks.message_detection.record)
+        self.assertFalse(record.tasks.message_detection.scheduled_analysis)
         self.assertEqual(record.tasks.message_detection.interval_minutes, 60)
-        self.assertTrue(analyze.tasks.message_detection.analyze)
-        self.assertTrue(analyze.tasks.message_detection.handle)
+        self.assertTrue(analyze.tasks.message_detection.scheduled_analysis)
+        self.assertFalse(analyze.tasks.message_detection.record)
         self.assertEqual(analyze.tasks.message_detection.interval_minutes, 15)
         self.assertEqual(analyze.tasks.join_management.minimum_confidence, 0.93)
         self.assertNotIn("tasks", settings.model_dump()["qq"]["bots"][0])
@@ -196,8 +197,7 @@ class SettingsAssignmentTests(unittest.TestCase):
 
         assignments = settings.qq_group_assignments("legacy")
         self.assertEqual([item.group_id for item in assignments], ["300", "400"])
-        self.assertTrue(all(item.tasks.message_detection.record_only for item in assignments))
-        self.assertTrue(all(item.tasks.announcement_sync.auto_sync for item in assignments))
+        self.assertTrue(all(item.tasks.message_detection.record for item in assignments))
         self.assertTrue(all(item.tasks.announcement_sync.enabled for item in assignments))
 
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
@@ -209,7 +209,21 @@ class SettingsAssignmentTests(unittest.TestCase):
         self.assertEqual(len(saved["orchestration"]["edges"]), 2)
         self.assertTrue(
             all(
-                edge["tasks"]["message_detection"]["record_only"]
+                edge["tasks"]["message_detection"]["record"]
+                for edge in saved["orchestration"]["edges"]
+            )
+        )
+        self.assertTrue(
+            all(
+                edge["tasks"]["announcement_sync"]["enabled"]
+                for edge in saved["orchestration"]["edges"]
+            )
+        )
+        self.assertTrue(
+            all(
+                "record_only" not in edge["tasks"]["message_detection"]
+                and "auto_sync" not in edge["tasks"]["announcement_sync"]
+                and "sync_on_startup" not in edge["tasks"]["announcement_sync"]
                 for edge in saved["orchestration"]["edges"]
             )
         )
@@ -226,7 +240,7 @@ class SettingsAssignmentTests(unittest.TestCase):
                                 "source": "qq-bot:default",
                                 "target": "feishu-bot:default",
                                 "relation": "searches",
-                                "tasks": {"message_detection": {"record_only": True}},
+                                "tasks": {"message_detection": {"record": True}},
                             }
                         ]
                     },
@@ -679,6 +693,13 @@ class _MessageDatabase:
         self.saved: list[GroupMessage] = []
 
     def save_message(self, message: GroupMessage) -> bool:
+        if any(
+            item.bot_id == message.bot_id
+            and item.group_id == message.group_id
+            and item.message_id == message.message_id
+            for item in self.saved
+        ):
+            return False
         self.saved.append(message)
         return True
 
@@ -689,6 +710,44 @@ class _Recorder:
 
     def append(self, message: GroupMessage) -> None:
         self.saved.append(message)
+
+
+class _CaptureService:
+    def __init__(self) -> None:
+        self.message: GroupMessage | None = None
+
+    def capture(self, message: GroupMessage) -> bool:
+        self.message = message
+        return True
+
+
+class EventCaptureTests(unittest.IsolatedAsyncioTestCase):
+    async def test_group_sender_card_is_preserved_with_the_message(self) -> None:
+        moderation = _CaptureService()
+        handler = EventHandler(
+            {"worker": object()},  # type: ignore[arg-type]
+            {"worker": moderation},  # type: ignore[arg-type]
+            {"worker": object()},  # type: ignore[arg-type]
+        )
+
+        result = await handler.handle(
+            {
+                "post_type": "message",
+                "message_type": "group",
+                "message_id": 10,
+                "group_id": 200,
+                "user_id": 300,
+                "sender": {"nickname": "Nickname", "card": "Group Card"},
+                "message": [{"type": "text", "data": {"text": "hello"}}],
+            },
+            "worker",
+        )
+
+        self.assertEqual(result, "captured")
+        assert moderation.message is not None
+        self.assertEqual(moderation.message.sender_name, "Group Card")
+        self.assertEqual(moderation.message.user_id, "300")
+        self.assertEqual(moderation.message.text, "hello")
 
 
 class ServiceIsolationTests(unittest.TestCase):
@@ -732,6 +791,107 @@ class ServiceIsolationTests(unittest.TestCase):
         self.assertEqual([item.message_id for item in database.saved], ["m1"])
         self.assertEqual([item.message_id for item in recorder.saved], ["m1"])
 
+    def test_scheduled_analysis_alone_buffers_messages_without_jsonl_recording(self) -> None:
+        settings = assignment_settings()
+        database = _MessageDatabase()
+        recorder = _Recorder()
+        service = ModerationService(
+            settings,
+            database,  # type: ignore[arg-type]
+            object(),  # type: ignore[arg-type]
+            object(),  # type: ignore[arg-type]
+            settings.qq_bot("worker"),
+            recorder,  # type: ignore[arg-type]
+        )
+
+        captured = service.capture(
+            GroupMessage(
+                bot_id="worker",
+                message_id="analysis-buffer",
+                group_id="200",
+                user_id="u1",
+                text="analyze me later",
+                sent_at=datetime.now(UTC),
+            )
+        )
+
+        self.assertTrue(captured)
+        self.assertEqual([item.message_id for item in database.saved], ["analysis-buffer"])
+        self.assertEqual(recorder.saved, [])
+
+    def test_record_and_analysis_capture_each_event_only_once(self) -> None:
+        raw = assignment_settings().model_dump(mode="json")
+        analyze_edge = next(
+            edge for edge in raw["orchestration"]["edges"] if edge["id"] == "worker-analyze"
+        )
+        analyze_edge["tasks"]["message_detection"]["record"] = True
+        settings = Settings.model_validate(raw)
+        database = _MessageDatabase()
+        recorder = _Recorder()
+        service = ModerationService(
+            settings,
+            database,  # type: ignore[arg-type]
+            object(),  # type: ignore[arg-type]
+            object(),  # type: ignore[arg-type]
+            settings.qq_bot("worker"),
+            recorder,  # type: ignore[arg-type]
+        )
+        message = GroupMessage(
+            bot_id="worker",
+            message_id="shared-capture",
+            group_id="200",
+            user_id="u1",
+            text="save once",
+            sent_at=datetime.now(UTC),
+        )
+
+        self.assertTrue(service.capture(message))
+        self.assertFalse(service.capture(message))
+        self.assertEqual([item.message_id for item in database.saved], ["shared-capture"])
+        self.assertEqual([item.message_id for item in recorder.saved], ["shared-capture"])
+
+
+class MessageAnalysisReuseTests(unittest.IsolatedAsyncioTestCase):
+    async def test_analysis_reuses_the_captured_sqlite_window(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            raw = assignment_settings().model_dump(mode="json")
+            analyze_edge = next(
+                edge for edge in raw["orchestration"]["edges"] if edge["id"] == "worker-analyze"
+            )
+            analyze_edge["tasks"]["message_detection"]["record"] = True
+            settings = Settings.model_validate(raw)
+            database = Database(Path(directory) / "messages.db")
+            database.initialize()
+            engine = AsyncMock()
+            engine.moderate_messages.return_value = ModerationResult(safe=True, summary="safe")
+            recorder = _Recorder()
+            service = ModerationService(
+                settings,
+                database,
+                engine,
+                object(),  # type: ignore[arg-type]
+                settings.qq_bot("worker"),
+                recorder,  # type: ignore[arg-type]
+            )
+            window_end = datetime.now(UTC).replace(microsecond=0)
+            message = GroupMessage(
+                bot_id="worker",
+                message_id="window-message",
+                group_id="200",
+                user_id="u1",
+                text="reuse this record",
+                sent_at=window_end,
+            )
+
+            self.assertTrue(service.capture(message))
+            result = await service.run_group("200", window_end + timedelta(seconds=1))
+
+            self.assertEqual(result, "safe")
+            engine.moderate_messages.assert_awaited_once()
+            analyzed_messages = engine.moderate_messages.await_args.args[0]
+            self.assertEqual([item.message_id for item in analyzed_messages], ["window-message"])
+            self.assertEqual([item.message_id for item in recorder.saved], ["window-message"])
+
 
 class _RuntimeService:
     def __init__(self) -> None:
@@ -743,6 +903,18 @@ class _RuntimeService:
 
     async def sync_group(self, group_id: str) -> dict[str, int]:
         self.groups.append(group_id)
+        return {"synced": 1}
+
+
+class _RepeatingAnnouncementService:
+    def __init__(self) -> None:
+        self.groups: list[str] = []
+        self.runtime: Runtime | None = None
+
+    async def sync_group(self, group_id: str) -> dict[str, int]:
+        self.groups.append(group_id)
+        if len(self.groups) >= 2 and self.runtime is not None:
+            self.runtime._stopping.set()
         return {"synced": 1}
 
 
@@ -766,6 +938,24 @@ class RuntimeIsolationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(moderation.groups, ["200"])
         self.assertEqual(announcement_result, {"200": {"synced": 1}})
         self.assertEqual(announcements.groups, ["200"])
+
+    async def test_enabled_announcement_sync_runs_immediately_and_then_periodically(self) -> None:
+        settings = assignment_settings()
+        announcements = _RepeatingAnnouncementService()
+        runtime = Runtime(
+            settings,
+            object(),  # type: ignore[arg-type]
+            object(),  # type: ignore[arg-type]
+            {},
+            {"worker": announcements},  # type: ignore[arg-type]
+        )
+        announcements.runtime = runtime
+
+        with patch("neoqbot.runtime.asyncio.sleep", new=AsyncMock(return_value=None)) as sleep:
+            await runtime._announcement_loop("worker", "200", 30)
+
+        self.assertEqual(announcements.groups, ["200", "200"])
+        sleep.assert_awaited_once_with(30 * 60)
 
 
 if __name__ == "__main__":

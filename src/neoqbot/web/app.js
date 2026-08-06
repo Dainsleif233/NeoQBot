@@ -500,7 +500,7 @@
       tags.className = "task-tags";
       tags.append(
         taskTag("入群管理", bot.enabled && bot.task_presence.join_management),
-        taskTag("消息检测", bot.enabled && bot.task_presence.message_detection),
+        taskTag("消息记录/分析", bot.enabled && bot.task_presence.message_detection),
         taskTag("公告同步", bot.enabled && bot.task_presence.announcement_sync)
       );
       row.append(title, tags);
@@ -710,8 +710,8 @@
   function defaultQQTasks() {
     return {
       join_management: { enabled: false, detect_requests: false, execute_management: false, auto_approve: false, auto_reject: false, minimum_confidence: 0.88 },
-      message_detection: { enabled: false, record_only: false, realtime_detection: false, polling_detection: false, analyze: false, handle: false, interval_minutes: 30, window_minutes: 5, risk_threshold: 0.7, max_messages_per_run: 300 },
-      announcement_sync: { enabled: false, auto_sync: false, sync_interval_minutes: 30, sync_on_startup: false, feishu_bot_id: "" }
+      message_detection: { enabled: false, record: false, scheduled_analysis: false, interval_minutes: 30, window_minutes: 5, risk_threshold: 0.7, max_messages_per_run: 300 },
+      announcement_sync: { enabled: false, sync_interval_minutes: 30, feishu_bot_id: "" }
     };
   }
 
@@ -979,7 +979,7 @@
       var title = document.createElement("strong");
       var text = document.createElement("p");
       var time = document.createElement("small");
-      title.textContent = record.title || record.user_id || record.announcement_id || record.message_id || "记录";
+      title.textContent = record.title || record.sender_name || record.user_id || record.announcement_id || record.message_id || "记录";
       text.textContent = record.text || record.content || (record.result_json && JSON.stringify(record.result_json)) || "";
       time.textContent = record.sent_at || record.last_seen_at || record.created_at || record.received_at || "";
       item.append(title, text, time);
@@ -1138,15 +1138,15 @@
       row.className = "qq-message-row";
       var avatar = document.createElement("span");
       avatar.className = "qq-message-avatar";
-      avatar.textContent = (record.user_id || "?").charAt(0).toUpperCase();
+      avatar.textContent = (record.sender_name || record.user_id || "?").charAt(0).toUpperCase();
       var body = document.createElement("div");
       body.className = "qq-message-body";
       var meta = document.createElement("div");
       meta.className = "qq-message-meta";
       var sender = document.createElement("strong");
-      sender.textContent = record.user_id || "未知成员";
+      sender.textContent = record.sender_name || record.user_id || "未知成员";
       var source = document.createElement("span");
-      source.textContent = (record.bot_id ? "经 " + record.bot_id + " 收集 · " : "") + displayRecordTime(record.sent_at);
+      source.textContent = (record.sender_name && record.user_id ? "QQ " + record.user_id + " · " : "") + (record.bot_id ? "经 " + record.bot_id + " 收集 · " : "") + displayRecordTime(record.sent_at);
       meta.append(sender, source);
       var bubble = document.createElement("div");
       bubble.className = "qq-message-bubble";
@@ -1181,7 +1181,8 @@
       content.textContent = record.content || "[空公告]";
       var footer = document.createElement("footer");
       var sources = Array.isArray(record.source_bot_ids_json) ? record.source_bot_ids_json : [record.bot_id].filter(Boolean);
-      footer.textContent = "发布者 " + (record.author_id || "未知") + " · 来源 Bot " + (sources.join("、") || "未知") + " · 最后发现 " + displayRecordTime(record.last_seen_at);
+      var noticeIds = Array.isArray(record.source_announcement_ids_json) ? record.source_announcement_ids_json : [record.announcement_id].filter(Boolean);
+      footer.textContent = "发布者 " + (record.author_id || "未知") + " · 来源 Bot " + (sources.join("、") || "未知") + (noticeIds.length > 1 ? " · 已合并公告 ID " + noticeIds.join("、") : "") + " · 最后发现 " + displayRecordTime(record.last_seen_at);
       card.append(header, content, footer);
       target.appendChild(card);
     });
@@ -1431,19 +1432,14 @@
       '<label class="switch-field"><span><strong>自动同意</strong></span><input data-field="join.auto_approve" type="checkbox"></label>',
       '<label class="switch-field"><span><strong>自动拒绝</strong></span><input data-field="join.auto_reject" type="checkbox"></label>',
       '<label>最低置信度<input data-field="join.minimum_confidence" type="number" min="0" max="1" step="0.01"></label></div></section>',
-      '<section class="task-card"><div class="task-master"><div><strong>消息记录与分析</strong><small>每个群独立设置窗口和阈值</small></div><input data-role="master" data-field="message.enabled" type="checkbox"></div><div class="task-detail">',
-      '<label class="switch-field"><span><strong>纯记录</strong></span><input data-field="message.record_only" type="checkbox"></label>',
-      '<label class="switch-field"><span><strong>实时登记</strong></span><input data-field="message.realtime_detection" type="checkbox"></label>',
-      '<label class="switch-field"><span><strong>轮询检测</strong></span><input data-field="message.polling_detection" type="checkbox"></label>',
-      '<label class="switch-field"><span><strong>分析</strong></span><input data-field="message.analyze" type="checkbox"></label>',
-      '<label class="switch-field"><span><strong>通知管理员</strong></span><input data-field="message.handle" type="checkbox"></label>',
-      '<label>轮询间隔（分钟）<input data-field="message.interval_minutes" type="number" min="1"></label>',
+      '<section class="task-card active"><div class="task-master"><div><strong>消息记录与分析</strong><small>记录与定时分析可独立启用；同时开启时只采集一次</small></div><span class="pill">2 个开关</span></div><div class="task-detail">',
+      '<label class="switch-field"><span><strong>记录</strong><small>实时备份发言人、时间和文本</small></span><input data-field="message.record" type="checkbox"></label>',
+      '<label class="switch-field"><span><strong>定时分析</strong><small>每半小时分析最近 5 分钟记录</small></span><input data-field="message.scheduled_analysis" type="checkbox"></label>',
+      '<label>分析周期（分钟）<input data-field="message.interval_minutes" type="number" min="1"></label>',
       '<label>分析窗口（分钟）<input data-field="message.window_minutes" type="number" min="1"></label>',
       '<label>风险阈值<input data-field="message.risk_threshold" type="number" min="0" max="1" step="0.01"></label>',
       '<label>单次最大消息数<input data-field="message.max_messages_per_run" type="number" min="1"></label></div></section>',
-      '<section class="task-card"><div class="task-master"><div><strong>公告同步</strong><small>抓取当前群并归档到飞书</small></div><input data-role="master" data-field="announcement.enabled" type="checkbox"></div><div class="task-detail">',
-      '<label class="switch-field"><span><strong>自动同步</strong></span><input data-field="announcement.auto_sync" type="checkbox"></label>',
-      '<label class="switch-field"><span><strong>启动时同步</strong></span><input data-field="announcement.sync_on_startup" type="checkbox"></label>',
+      '<section class="task-card"><div class="task-master"><div><strong>公告同步</strong><small>启用即全量归档已有公告，并持续同步新公告</small></div><input data-role="master" data-field="announcement.enabled" type="checkbox"></div><div class="task-detail">',
       '<label>同步间隔（分钟）<input data-field="announcement.sync_interval_minutes" type="number" min="1"></label>',
       '<label>飞书 Bot ID<input data-field="announcement.feishu_bot_id" placeholder="留空使用默认账号"></label></div></section>',
       '</div>'
@@ -1458,19 +1454,13 @@
       "join.auto_approve": tasks.join_management.auto_approve,
       "join.auto_reject": tasks.join_management.auto_reject,
       "join.minimum_confidence": tasks.join_management.minimum_confidence,
-      "message.enabled": tasks.message_detection.enabled,
-      "message.record_only": tasks.message_detection.record_only,
-      "message.realtime_detection": tasks.message_detection.realtime_detection,
-      "message.polling_detection": tasks.message_detection.polling_detection,
-      "message.analyze": tasks.message_detection.analyze,
-      "message.handle": tasks.message_detection.handle,
+      "message.record": tasks.message_detection.record,
+      "message.scheduled_analysis": tasks.message_detection.scheduled_analysis,
       "message.interval_minutes": tasks.message_detection.interval_minutes,
       "message.window_minutes": tasks.message_detection.window_minutes,
       "message.risk_threshold": tasks.message_detection.risk_threshold,
       "message.max_messages_per_run": tasks.message_detection.max_messages_per_run,
       "announcement.enabled": tasks.announcement_sync.enabled,
-      "announcement.auto_sync": tasks.announcement_sync.auto_sync,
-      "announcement.sync_on_startup": tasks.announcement_sync.sync_on_startup,
       "announcement.sync_interval_minutes": tasks.announcement_sync.sync_interval_minutes,
       "announcement.feishu_bot_id": tasks.announcement_sync.feishu_bot_id || ""
     };
@@ -1484,29 +1474,10 @@
     field(editor, "join.detect_requests").addEventListener("change", function () {
       if (this.checked) { joinMaster.checked = true; joinMaster.dispatchEvent(new Event("change")); }
     });
-    var messageMaster = field(editor, "message.enabled");
-    field(editor, "message.analyze").addEventListener("change", function () {
-      if (this.checked) { messageMaster.checked = true; field(editor, "message.polling_detection").checked = true; }
-      messageMaster.dispatchEvent(new Event("change"));
-    });
-    field(editor, "message.handle").addEventListener("change", function () {
-      if (this.checked) { messageMaster.checked = true; field(editor, "message.polling_detection").checked = true; field(editor, "message.analyze").checked = true; }
-      messageMaster.dispatchEvent(new Event("change"));
-    });
-    ["message.record_only", "message.realtime_detection", "message.polling_detection"].forEach(function (name) {
-      field(editor, name).addEventListener("change", function () {
-        if (this.checked) { messageMaster.checked = true; messageMaster.dispatchEvent(new Event("change")); }
-      });
-    });
-    var announcementMaster = field(editor, "announcement.enabled");
-    ["announcement.auto_sync", "announcement.sync_on_startup"].forEach(function (name) {
-      field(editor, name).addEventListener("change", function () {
-        if (this.checked) { announcementMaster.checked = true; announcementMaster.dispatchEvent(new Event("change")); }
-      });
-    });
     function commit() {
       var joinEnabled = field(editor, "join.enabled").checked;
-      var messageEnabled = field(editor, "message.enabled").checked;
+      var recordEnabled = field(editor, "message.record").checked;
+      var analysisEnabled = field(editor, "message.scheduled_analysis").checked;
       var announcementEnabled = field(editor, "announcement.enabled").checked;
       edge.tasks = {
         join_management: {
@@ -1518,12 +1489,9 @@
           minimum_confidence: numberValue(field(editor, "join.minimum_confidence").value, 0.88)
         },
         message_detection: {
-          enabled: messageEnabled,
-          record_only: messageEnabled && field(editor, "message.record_only").checked,
-          realtime_detection: messageEnabled && field(editor, "message.realtime_detection").checked,
-          polling_detection: messageEnabled && field(editor, "message.polling_detection").checked,
-          analyze: messageEnabled && field(editor, "message.analyze").checked,
-          handle: messageEnabled && field(editor, "message.handle").checked,
+          enabled: recordEnabled || analysisEnabled,
+          record: recordEnabled,
+          scheduled_analysis: analysisEnabled,
           interval_minutes: numberValue(field(editor, "message.interval_minutes").value, 30),
           window_minutes: numberValue(field(editor, "message.window_minutes").value, 5),
           risk_threshold: numberValue(field(editor, "message.risk_threshold").value, 0.7),
@@ -1531,9 +1499,7 @@
         },
         announcement_sync: {
           enabled: announcementEnabled,
-          auto_sync: announcementEnabled && field(editor, "announcement.auto_sync").checked,
           sync_interval_minutes: numberValue(field(editor, "announcement.sync_interval_minutes").value, 30),
-          sync_on_startup: announcementEnabled && field(editor, "announcement.sync_on_startup").checked,
           feishu_bot_id: field(editor, "announcement.feishu_bot_id").value.trim()
         }
       };
@@ -2449,6 +2415,7 @@
 
   function bindTaskCard(taskCard) {
     var master = taskCard.querySelector('[data-role="master"]');
+    if (!master) return;
     function refresh() { taskCard.classList.toggle("active", master.checked); }
     master.addEventListener("change", function () {
       if (!master.checked) {
@@ -2572,7 +2539,7 @@
   function recordTitle(kind, item) {
     var bot = item.bot_id ? "[" + item.bot_id + "] " : "";
     if (kind === "joins") return bot + "群 " + item.group_id + " · 申请人 " + item.user_id;
-    if (kind === "messages") return bot + "群 " + item.group_id + " · 发言人 " + item.user_id;
+    if (kind === "messages") return bot + "群 " + item.group_id + " · 发言人 " + (item.sender_name || item.user_id);
     if (kind === "moderation") return bot + "群 " + item.group_id + " · 风险 " + item.max_risk;
     if (kind === "announcements") return bot + "群 " + item.group_id + " · " + (item.title || item.announcement_id);
     return item.action + " · " + item.status;

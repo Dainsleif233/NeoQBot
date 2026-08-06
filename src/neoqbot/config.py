@@ -128,42 +128,52 @@ class QQJoinTaskConfig(BaseModel):
 
 class QQMessageTaskConfig(BaseModel):
     enabled: bool = False
-    record_only: bool = False
-    realtime_detection: bool = False
-    polling_detection: bool = False
-    analyze: bool = False
-    handle: bool = False
+    record: bool = False
+    scheduled_analysis: bool = False
     interval_minutes: int = Field(default=30, ge=1, le=1440)
     window_minutes: int = Field(default=5, ge=1, le=1440)
     risk_threshold: float = Field(default=0.7, ge=0, le=1)
     max_messages_per_run: int = Field(default=300, ge=1, le=5000)
 
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_switches(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        migrated = dict(value)
+        if "record" not in migrated:
+            migrated["record"] = bool(
+                migrated.get("record_only") or migrated.get("realtime_detection")
+            )
+        if "scheduled_analysis" not in migrated:
+            migrated["scheduled_analysis"] = bool(
+                migrated.get("analyze")
+                or migrated.get("polling_detection")
+                or migrated.get("handle")
+            )
+        return migrated
+
     @model_validator(mode="after")
     def apply_dependencies(self) -> QQMessageTaskConfig:
-        if self.handle:
-            self.enabled = True
-            self.polling_detection = True
-            self.analyze = True
-        if self.analyze:
-            self.enabled = True
-            self.polling_detection = True
-        if self.record_only or self.realtime_detection or self.polling_detection:
-            self.enabled = True
+        self.enabled = self.record or self.scheduled_analysis
         return self
 
 
 class QQAnnouncementTaskConfig(BaseModel):
     enabled: bool = False
-    auto_sync: bool = False
     sync_interval_minutes: int = Field(default=30, ge=1, le=10080)
-    sync_on_startup: bool = False
     feishu_bot_id: str = ""
 
-    @model_validator(mode="after")
-    def apply_dependencies(self) -> QQAnnouncementTaskConfig:
-        if self.auto_sync or self.sync_on_startup:
-            self.enabled = True
-        return self
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_switches(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        migrated = dict(value)
+        migrated["enabled"] = bool(
+            migrated.get("enabled") or migrated.get("auto_sync") or migrated.get("sync_on_startup")
+        )
+        return migrated
 
 
 class QQTaskConfig(BaseModel):
@@ -253,7 +263,15 @@ class ModerationConfig(BaseModel):
 class AnnouncementConfig(BaseModel):
     enabled: bool = False
     sync_interval_minutes: int = Field(default=30, ge=1, le=10080)
-    sync_on_startup: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_switch(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        migrated = dict(value)
+        migrated["enabled"] = bool(migrated.get("enabled") or migrated.get("sync_on_startup"))
+        return migrated
 
 
 class FeishuConnectionConfig(BaseModel):

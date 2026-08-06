@@ -33,6 +33,7 @@ class GroupMessage(BaseModel):
     message_id: str
     group_id: str
     user_id: str
+    sender_name: str = ""
     text: str
     sent_at: datetime
     raw_event: dict[str, Any] = Field(default_factory=dict)

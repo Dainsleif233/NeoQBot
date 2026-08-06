@@ -18,14 +18,21 @@ from neoqbot.models import Announcement, GroupMessage, JoinRequest
 from neoqbot.recording import LocalMessageRecorder
 
 
-def announcement(bot_id: str, *, content: str = "Welcome") -> Announcement:
+def announcement(
+    bot_id: str,
+    *,
+    content: str = "Welcome",
+    announcement_id: str = "notice-1",
+    published_at: datetime | None = None,
+) -> Announcement:
     return Announcement(
         bot_id=bot_id,
-        announcement_id="notice-1",
+        announcement_id=announcement_id,
         group_id="100",
         title="Group rules",
         content=content,
         author_id="owner",
+        published_at=published_at,
     )
 
 
@@ -54,6 +61,86 @@ class AnnouncementArchiveTests(unittest.TestCase):
             records = database.recent_records("announcements", group_id="100", limit=10)
             self.assertEqual(len(records), 1)
             self.assertEqual(records[0]["author_id"], "owner")
+
+    def test_same_content_and_publish_minute_deduplicates_different_notice_ids(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            database = Database(Path(directory) / "records.db")
+            database.initialize()
+            published = datetime(2026, 8, 6, 4, 15, 7, tzinfo=UTC)
+
+            self.assertTrue(
+                database.upsert_announcement(
+                    announcement("bot-a", announcement_id="notice-a", published_at=published)
+                )
+            )
+            self.assertFalse(
+                database.upsert_announcement(
+                    announcement(
+                        "bot-b",
+                        announcement_id="notice-b",
+                        published_at=published + timedelta(seconds=40),
+                    )
+                )
+            )
+
+            records = database.recent_records("announcements", group_id="100", limit=10)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["source_bot_ids_json"], ["bot-a", "bot-b"])
+            self.assertEqual(records[0]["source_announcement_ids_json"], ["notice-a", "notice-b"])
+
+            self.assertEqual(database.reconcile_announcements("100", {"notice-b"}), 0)
+            record = database.recent_records("announcements", group_id="100", limit=1)[0]
+            self.assertFalse(record["is_deleted"])
+
+    def test_same_content_at_a_different_time_is_preserved(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            database = Database(Path(directory) / "records.db")
+            database.initialize()
+            published = datetime(2026, 8, 6, 4, 15, tzinfo=UTC)
+
+            self.assertTrue(
+                database.upsert_announcement(
+                    announcement("bot-a", announcement_id="notice-a", published_at=published)
+                )
+            )
+            self.assertTrue(
+                database.upsert_announcement(
+                    announcement(
+                        "bot-a",
+                        announcement_id="notice-b",
+                        published_at=published + timedelta(minutes=2),
+                    )
+                )
+            )
+
+            records = database.recent_records("announcements", group_id="100", limit=10)
+            self.assertEqual(len(records), 2)
+
+    def test_merged_notice_ids_keep_one_version_lineage(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            database = Database(Path(directory) / "records.db")
+            database.initialize()
+            published = datetime(2026, 8, 6, 4, 15, tzinfo=UTC)
+            original_a = announcement("bot-a", announcement_id="notice-a", published_at=published)
+            original_b = announcement("bot-b", announcement_id="notice-b", published_at=published)
+            updated_b = announcement(
+                "bot-b",
+                announcement_id="notice-b",
+                content="Updated rules",
+                published_at=published,
+            )
+
+            database.upsert_announcement(original_a)
+            database.upsert_announcement(original_b)
+            self.assertTrue(database.upsert_announcement(updated_b))
+            self.assertFalse(database.upsert_announcement(original_a))
+
+            records = database.recent_records("announcements", group_id="100", limit=10)
+            self.assertEqual(len(records), 2)
+            self.assertEqual(sum(int(item["is_current"]) for item in records), 1)
+            current = next(item for item in records if item["is_current"])
+            self.assertEqual(current["content"], "Updated rules")
+            self.assertEqual(current["source_announcement_ids_json"], ["notice-a", "notice-b"])
 
     def test_versions_are_preserved_and_deleted_notices_are_tagged(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
@@ -95,13 +182,14 @@ class AnnouncementArchiveTests(unittest.TestCase):
             connection = sqlite3.connect(path)
             try:
                 connection.execute("DROP INDEX uq_announcements_group_version")
+                connection.execute("DROP INDEX uq_announcements_group_published_content")
                 connection.execute(
                     """
                     INSERT INTO announcements (
                         bot_id, announcement_id, group_id, content_hash, title, content,
                         author_id, published_at, source_payload_json, first_seen_at,
                         last_seen_at, source_bot_ids_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, '{}', ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?)
                     """,
                     (
                         "bot-a",
@@ -113,6 +201,7 @@ class AnnouncementArchiveTests(unittest.TestCase):
                         "owner",
                         now,
                         now,
+                        now,
                         '["bot-a"]',
                     ),
                 )
@@ -122,16 +211,17 @@ class AnnouncementArchiveTests(unittest.TestCase):
                         bot_id, announcement_id, group_id, content_hash, title, content,
                         author_id, published_at, source_payload_json, first_seen_at,
                         last_seen_at, source_bot_ids_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, '{}', ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?)
                     """,
                     (
                         "bot-b",
-                        "notice-1",
+                        "notice-2",
                         "100",
                         content_hash,
                         "Group rules",
                         "Welcome",
                         "owner",
+                        now,
                         now,
                         now,
                         '["bot-b"]',
@@ -145,6 +235,7 @@ class AnnouncementArchiveTests(unittest.TestCase):
             records = database.recent_records("announcements", group_id="100", limit=10)
             self.assertEqual(len(records), 1)
             self.assertEqual(records[0]["source_bot_ids_json"], ["bot-a", "bot-b"])
+            self.assertEqual(records[0]["source_announcement_ids_json"], ["notice-1", "notice-2"])
 
 
 class GroupRecordManagementTests(unittest.TestCase):
@@ -216,7 +307,7 @@ class GroupRecordManagementTests(unittest.TestCase):
                                 "source": "qq-bot:worker",
                                 "target": "group-record",
                                 "relation": "observes",
-                                "tasks": {"message_detection": {"record_only": True}},
+                                "tasks": {"message_detection": {"record": True}},
                             }
                         ],
                     },
@@ -235,6 +326,7 @@ class GroupRecordManagementTests(unittest.TestCase):
                 message_id="message-1",
                 group_id="100",
                 user_id="member",
+                sender_name="Member Card",
                 text="hello",
                 sent_at=datetime.now(UTC),
             )
@@ -272,6 +364,7 @@ class GroupRecordManagementTests(unittest.TestCase):
             payload = json.loads(export.content)
             self.assertEqual(payload["schema"], "neoqbot.group-records.v1")
             self.assertEqual(payload["counts"]["messages"], 1)
+            self.assertEqual(payload["records"]["messages"][0]["sender_name"], "Member Card")
             self.assertEqual(payload["counts"]["announcements"], 1)
             self.assertEqual(payload["counts"]["joins"], 1)
             self.assertIn("attachment", export.headers["content-disposition"])

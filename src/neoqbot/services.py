@@ -153,12 +153,10 @@ class ModerationService:
         if assignment is None:
             return False
         task = assignment.tasks.message_detection
-        if not task.enabled or not (
-            task.record_only or task.realtime_detection or task.polling_detection
-        ):
+        if not task.record and not task.scheduled_analysis:
             return False
         saved = self.database.save_message(message)
-        if saved and task.record_only and self.recorder is not None:
+        if saved and task.record and self.recorder is not None:
             try:
                 self.recorder.append(message)
             except OSError as exc:
@@ -177,27 +175,10 @@ class ModerationService:
         if assignment is None:
             return "unmanaged_group"
         task = assignment.tasks.message_detection
-        if not task.enabled or not task.polling_detection:
+        if not task.scheduled_analysis:
             return "disabled"
         end = (window_end or datetime.now(UTC)).astimezone(UTC)
         start = end - timedelta(minutes=task.window_minutes)
-        if not task.analyze:
-            messages = self.database.messages_between(
-                group_id, start, end, task.max_messages_per_run, self.bot.id
-            )
-            self.database.audit(
-                "message_poll",
-                "completed",
-                "group",
-                group_id,
-                {
-                    "bot_id": self.bot.id,
-                    "window_start": start,
-                    "window_end": end,
-                    "message_count": len(messages),
-                },
-            )
-            return f"detected:{len(messages)}"
         if self.database.moderation_run_exists(group_id, start, end, self.bot.id):
             return "duplicate"
         messages = self.database.messages_between(
@@ -222,7 +203,7 @@ class ModerationService:
         alert = bool(result.findings and result.max_risk >= task.risk_threshold)
         alert_delivered = False
         alert_failed = False
-        if alert and task.handle:
+        if alert:
             try:
                 await self.qq.notify_administrators(
                     self._format_alert(group_id, start, end, len(messages), result)
@@ -267,8 +248,6 @@ class ModerationService:
             return "alerted"
         if alert_failed:
             return "alert_failed"
-        if alert and not task.handle:
-            return "analyzed"
         return "safe"
 
     @staticmethod

@@ -56,7 +56,7 @@ class Runtime:
             )
         for assignment in self.settings.qq_group_assignments():
             message_task = assignment.tasks.message_detection
-            if message_task.enabled and message_task.polling_detection:
+            if message_task.scheduled_analysis:
                 self._tasks.append(
                     asyncio.create_task(
                         self._moderation_loop(
@@ -68,17 +68,13 @@ class Runtime:
                     )
                 )
             announcement_task = assignment.tasks.announcement_sync
-            if announcement_task.enabled and (
-                announcement_task.auto_sync or announcement_task.sync_on_startup
-            ):
+            if announcement_task.enabled:
                 self._tasks.append(
                     asyncio.create_task(
                         self._announcement_loop(
                             assignment.bot_id,
                             assignment.group_id,
                             announcement_task.sync_interval_minutes,
-                            announcement_task.sync_on_startup,
-                            announcement_task.auto_sync,
                         ),
                         name=f"announcement-loop-{assignment.bot_id}-{assignment.group_id}",
                     )
@@ -121,7 +117,7 @@ class Runtime:
         result: dict[str, dict[str, str]] = {}
         for bot in self.settings.effective_qq_bots():
             if any(
-                assignment.tasks.message_detection.analyze
+                assignment.tasks.message_detection.scheduled_analysis
                 for assignment in self.settings.qq_group_assignments(bot.id)
             ):
                 result[bot.id] = await self.run_bot_moderation(bot.id, end)
@@ -139,7 +135,7 @@ class Runtime:
         assignments = [
             assignment
             for assignment in self.settings.qq_group_assignments(bot_id)
-            if assignment.tasks.message_detection.analyze
+            if assignment.tasks.message_detection.scheduled_analysis
         ]
         for assignment in assignments:
             group_id = assignment.group_id
@@ -215,21 +211,14 @@ class Runtime:
         bot_id: str,
         group_id: str,
         interval_minutes: int,
-        sync_on_startup: bool,
-        auto_sync: bool,
     ) -> None:
         service = self.announcements.get(bot_id)
         if service is None:
             return
-        if sync_on_startup:
-            try:
-                await service.sync_group(group_id)
-            except Exception:
-                logger.exception(
-                    "Initial announcement sync failed for %s group %s", bot_id, group_id
-                )
-        if not auto_sync:
-            return
+        try:
+            await service.sync_group(group_id)
+        except Exception:
+            logger.exception("Initial announcement sync failed for %s group %s", bot_id, group_id)
         interval_seconds = max(1, interval_minutes) * 60
         while not self._stopping.is_set():
             await asyncio.sleep(interval_seconds)

@@ -58,7 +58,7 @@ orchestration:
       enabled: true
       tasks:
         message_detection:
-          record_only: true
+          record: true
           interval_minutes: 60
     - id: moderator-manages-main
       source: qq-bot:moderator
@@ -70,13 +70,22 @@ orchestration:
           execute_management: true
           minimum_confidence: 0.92
         message_detection:
-          analyze: true
-          handle: true
+          scheduled_analysis: true
           interval_minutes: 15
+          window_minutes: 5
+        announcement_sync:
+          enabled: true
+          sync_interval_minutes: 30
 ```
 
-依赖项由配置模型补齐，例如 `analyze: true` 会同时启用消息事务与轮询检测；这只影响当前连接，
-不会修改该 Bot 连接的其他群。
+消息事务只有两个开关：`record` 实时备份文本消息的 QQ 号、群名片/昵称、发送时间与文本，并写入
+SQLite 和按日 JSONL；`scheduled_analysis` 默认每 30 分钟分析最近 5 分钟。两者可任意单独开启；
+定时分析单独开启时，消息只进入 SQLite 分析缓冲，不写长期 JSONL；两者同时开启时只保存一次，
+分析直接读取这份 SQLite 窗口。风险达到阈值时会通知管理员，但不会自动禁言或踢人。
+
+公告事务只有 `enabled` 一个开关。启用后 Runtime 会立即全量抓取群中已有公告，随后按
+`sync_interval_minutes` 持续同步，不再区分“启动时同步”和“自动同步”。这些设置只影响当前
+Bot→群连接，不会修改该 Bot 连接的其他群。
 
 ## 典型拓扑
 
@@ -94,10 +103,12 @@ QQ Bot ──管理──> 社区主群
 记录 Bot ──监听──> 社区主群 <──管理── 审核 Bot
 ```
 
-在“社区主群”的连接上，记录 Bot 可以只开启“纯记录群消息”，审核 Bot 则开启入群审核或消息
-分析。两个账号使用独立 Webhook、Token 和审计身份；它们连接其他群时可以采用完全不同的事务。
-多个 Bot 抓取同一群公告时，平台使用“群号 + 公告 ID + 规范化标题/内容”作为版本身份，只保留
-一个群级档案，同时记录所有来源 Bot。启动迁移也会自动合并旧数据库中已经产生的跨 Bot 重复项。
+在“社区主群”的连接上，记录 Bot 可以只开启“记录”，审核 Bot 则开启入群审核或“定时分析”。
+两个账号使用独立 Webhook、Token 和审计身份；它们连接其他群时可以采用完全不同的事务。
+多个 Bot 抓取同一群公告时，平台优先使用“群号 + 规范化标题/内容 + 发布时间分钟槽”识别同一
+公告；即使 OneBot 返回不同公告 ID，同内容且同一发布时间也只保留一个群级档案，并记录所有来源
+Bot 与来源公告 ID。不同时间再次发布的相同内容仍会单独留档。启动迁移会自动合并旧数据库中已经
+产生的这类重复项。
 
 ### 公告归档与知识检索
 
@@ -117,6 +128,10 @@ QQ Bot ──管理──> QQ 群 ──归档──> 知识库
 4. Webhook、Token 和管理员配置继续保留在资源编排的单 Bot 详细配置中；
 5. 再次保存时只写入 `orchestration.resources`、`orchestration.edges[].tasks` 和
    `orchestration.layout`，不再持久化旧字段。
+
+连接任务中的旧开关也会收敛迁移：`record_only` / `realtime_detection` 迁移到 `record`，
+`polling_detection` / `analyze` / `handle` 迁移到 `scheduled_analysis`，公告的 `auto_sync` /
+`sync_on_startup` 迁移到唯一的 `enabled`。保存后只输出新字段。
 
 若旧版启用了事务却没有任何可迁移的群连接，配置会明确拒绝加载并提示先补充群归属，避免把有
 副作用的任务静默扩散到未知范围。新配置中，编排边是唯一权威来源，不再维护 Bot 级镜像字段。

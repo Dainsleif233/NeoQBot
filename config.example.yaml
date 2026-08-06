@@ -5,7 +5,7 @@ app:
   timezone: Asia/Shanghai
   log_level: INFO
   database_path: data/neoqbot.db
-  # 纯记录群消息按 Bot/群号/日期写入 JSONL；Docker 中位于持久化数据卷。
+  # 开启“记录”后，群消息按 Bot/群号/日期写入 JSONL；Docker 中位于持久化数据卷。
   message_archive_path: data/group-message-records
   # 生产环境请通过 NEOQBOT_APP__ADMIN_API_TOKEN 注入随机长令牌。
   admin_api_token: ""
@@ -100,7 +100,6 @@ moderation:
 announcements:
   enabled: false
   sync_interval_minutes: 30
-  sync_on_startup: false
 
 feishu:
   bots:
@@ -146,20 +145,15 @@ orchestration:
           minimum_confidence: 0.88
         message_detection:
           enabled: false
-          record_only: false
-          realtime_detection: false
-          polling_detection: false
-          analyze: false
-          handle: false
+          record: false
+          scheduled_analysis: false
           interval_minutes: 30
           window_minutes: 5
           risk_threshold: 0.7
           max_messages_per_run: 300
         announcement_sync:
           enabled: false
-          auto_sync: false
           sync_interval_minutes: 30
-          sync_on_startup: false
           feishu_bot_id: ""
   layout: {}
 

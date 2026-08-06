@@ -69,11 +69,15 @@ class EventHandler:
             text = onebot_plain_text(event.get("message", event.get("raw_message", "")))
             message_type = event.get("message_type")
             if message_type == "group":
+                sender = event.get("sender") if isinstance(event.get("sender"), dict) else {}
                 message = GroupMessage(
                     bot_id=bot_id,
                     message_id=str(event.get("message_id") or _event_id(event)),
                     group_id=str(event.get("group_id", "")),
                     user_id=str(event.get("user_id", "")),
+                    sender_name=str(
+                        sender.get("card") or sender.get("nickname") or event.get("user_id", "")
+                    ),
                     text=text,
                     sent_at=_event_time(event),
                     raw_event=event,
