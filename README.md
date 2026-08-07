@@ -132,8 +132,9 @@ docker compose logs --tail=100 neoqbot qq-bridge
 docker compose exec neoqbot neoqbot --config /app/data/config.yaml doctor
 ```
 
-不要复制或粘贴 Token 到日志、Issue 或聊天窗口。新版会在平台审计中仅记录鉴权方式是否存在，便于
-判断是旧客户端未重启、Bearer Header 缺失，还是配置残留，而不会记录凭据明文。
+不要复制或粘贴 Token 到日志、Issue 或聊天窗口。NapCat 的 HTTP Client 会用该 Token 对事件原文
+生成 `X-Signature`（HMAC-SHA1），而不是发送 Bearer Header；平台同时兼容标准 Bearer 和旧独立
+HMAC 配置。审计中只记录鉴权方式是否存在，不会记录凭据明文。
 在 Compose 部署中，`doctor` 的对应 QQ Bot 会提供 `event_client_configuration`：其中 `ok: true`
 表示持久化的 NapCat HTTP Client URL、启用状态和 Token 已与 NeoQBot 的共享 Secret 一致。
 

@@ -18,6 +18,25 @@ class OneBotError(RuntimeError):
 def onebot_plain_text(message: object) -> str:
     if isinstance(message, str):
         return message
+    if isinstance(message, dict):
+        kind = message.get("type")
+        data = message.get("data")
+        if isinstance(data, dict):
+            if kind == "text":
+                return str(data.get("text", ""))
+            if kind == "at":
+                return f"@{data.get('qq', '')}"
+            if kind in {"image", "record", "video", "file"}:
+                return f"[{kind}]"
+        # NapCat's group-notice action returns a structured message such as
+        # {"text": "...", "image": [...]}, rather than OneBot segments.
+        # Persist its actual text, never the unstable Python representation of
+        # the whole payload (which also includes incidental media metadata).
+        for field in ("text", "content", "message", "segments"):
+            value = message.get(field)
+            if value is not None:
+                return onebot_plain_text(value)
+        return ""
     if not isinstance(message, list):
         return str(message or "")
     parts: list[str] = []

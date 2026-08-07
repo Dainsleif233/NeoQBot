@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import tempfile
 import time
@@ -662,6 +664,91 @@ class NapCatInitializationTests(unittest.TestCase):
 
 
 class WebhookIsolationTests(unittest.TestCase):
+    def test_bundled_napcat_hmac_signature_reaches_message_recorder(self) -> None:
+        """NapCat HTTP Client signs events; it does not send an Authorization header."""
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            root = Path(directory)
+            settings = Settings.model_validate(
+                {
+                    "app": {
+                        "database_path": str(root / "napcat-signature.db"),
+                        "message_archive_path": str(root / "messages"),
+                    },
+                    "gui": {"enabled": False},
+                    "qq": {
+                        "bots": [
+                            {
+                                "id": "mualliance1",
+                                "name": "Bundled",
+                                "enabled": True,
+                                "connection_mode": "bundled_napcat",
+                            }
+                        ]
+                    },
+                    "feishu": {"bots": []},
+                    "orchestration": {
+                        "resources": [
+                            {
+                                "id": "main-group",
+                                "kind": "qq_group",
+                                "name": "Main",
+                                "external_id": "1081589022",
+                            }
+                        ],
+                        "edges": [
+                            {
+                                "id": "bundled-main",
+                                "source": "qq-bot:mualliance1",
+                                "target": "main-group",
+                                "relation": "observes",
+                                "tasks": {"message_detection": {"record": True}},
+                            }
+                        ],
+                    },
+                }
+            )
+            event = {
+                "post_type": "message",
+                "message_type": "group",
+                "group_id": 1081589022,
+                "message_id": 39,
+                "user_id": 2523026981,
+                "sender": {"card": "USTB LYOfficial"},
+                "time": 1786012695,
+                "message": [{"type": "text", "data": {"text": "signed event"}}],
+            }
+            body = json.dumps(event, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            token = "test-onebot-token"
+            signature = "sha1=" + hmac.new(token.encode("utf-8"), body, hashlib.sha1).hexdigest()
+            app = create_app(settings)
+
+            with (
+                patch("neoqbot.app.resolve_secret", return_value=token),
+                TestClient(app) as client,
+            ):
+                response = client.post(
+                    "/webhooks/onebot",
+                    content=body,
+                    headers={
+                        "Content-Type": "application/json",
+                        "X-Signature": signature,
+                    },
+                )
+                deadline = time.monotonic() + 2
+                while (
+                    app.state.container.database.counts()["group_messages"] == 0
+                    and time.monotonic() < deadline
+                ):
+                    time.sleep(0.01)
+                records = app.state.container.database.recent_records(
+                    "messages", group_id="1081589022", limit=10
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["bot_id"], "mualliance1")
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["text"], "signed event")
+
     def test_identity_independent_webhook_routes_to_the_bundled_bot(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
             settings = Settings.model_validate(
@@ -783,6 +870,52 @@ class WebhookIsolationTests(unittest.TestCase):
         self.assertTrue(audit_details["access_token_configured"])
         self.assertNotIn("wrong-token", json.dumps(audit_details))
         self.assertNotIn("test-onebot-token", json.dumps(audit_details))
+
+    def test_legacy_hmac_signature_is_accepted_but_an_invalid_signature_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            config = assignment_settings().model_dump(mode="json")
+            config["app"]["database_path"] = str(Path(directory) / "legacy-hmac.db")
+            config["app"]["message_archive_path"] = str(Path(directory) / "messages")
+            config["qq"]["bots"][0].update(
+                {
+                    "access_token": "",
+                    "access_token_file": "",
+                    "webhook_secret": "legacy-hmac-secret",
+                }
+            )
+            settings = Settings.model_validate(config)
+            app = create_app(settings)
+            submit = AsyncMock()
+            app.state.container.runtime.submit = submit
+            event = {
+                "post_type": "message",
+                "message_type": "group",
+                "group_id": 100,
+                "message_id": 3,
+                "user_id": 2,
+                "message": "legacy hmac event",
+            }
+            body = json.dumps(event, separators=(",", ":")).encode("utf-8")
+            signature = "sha1=" + hmac.new(b"legacy-hmac-secret", body, hashlib.sha1).hexdigest()
+
+            with TestClient(app) as client:
+                accepted = client.post(
+                    "/webhooks/onebot/worker",
+                    content=body,
+                    headers={"Content-Type": "application/json", "X-Signature": signature},
+                )
+                rejected = client.post(
+                    "/webhooks/onebot/worker",
+                    content=body,
+                    headers={
+                        "Content-Type": "application/json",
+                        "X-Signature": "sha1=" + "0" * 40,
+                    },
+                )
+
+        self.assertEqual(accepted.status_code, 200)
+        self.assertEqual(rejected.status_code, 401)
+        submit.assert_awaited_once()
 
     def test_legacy_default_webhook_alias_reaches_the_real_message_recorder(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:

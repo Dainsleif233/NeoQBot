@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 def _verify_onebot_signature(body: bytes, signature: str | None, secret: str) -> bool:
     if not secret:
-        return True
+        return False
     if not signature:
         return False
     digest = hmac.new(secret.encode("utf-8"), body, hashlib.sha1).hexdigest()
@@ -44,16 +44,19 @@ def _verify_onebot_auth(
     webhook_secret: str,
     access_token: str,
 ) -> bool:
-    """Accept each credential explicitly configured for the OneBot endpoint.
+    """Validate the credentials used by standard OneBot HTTP clients.
 
-    Some old deployments retained an HMAC secret while their bundled NapCat
-    client was already configured with a Bearer token.  Treating HMAC as an
-    exclusive mode made that valid client fail permanently.  Both credentials
-    remain mandatory secrets; accepting either is a compatibility bridge, not
-    anonymous access.
+    NapCat uses its HTTP-client ``token`` as an HMAC-SHA1 signing key and
+    sends the result in ``X-Signature``.  The same OneBot token is also used
+    by its HTTP server as a Bearer token.  The bundled sidecar deliberately
+    shares this single secret with NeoQBot, so accept either protocol form.
+    ``webhook_secret`` remains an optional independent HMAC key for existing
+    external adapters; no unauthenticated request is accepted.
     """
-    signature_valid = bool(webhook_secret) and _verify_onebot_signature(
-        body, signature, webhook_secret
+    signature_valid = any(
+        _verify_onebot_signature(body, signature, secret)
+        for secret in dict.fromkeys((webhook_secret, access_token))
+        if secret
     )
     scheme, supplied = get_authorization_scheme_param(authorization or "")
     token_valid = (
@@ -285,7 +288,8 @@ def create_app(settings: Settings | None = None, config_path: str | Path | None 
                 }
                 logger.warning(
                     "Rejected OneBot webhook authentication for bot %s from %s: %s. "
-                    "For bundled NapCat, refresh init-volumes and restart qq-bridge.",
+                    "Verify the signing credential; for bundled NapCat, refresh init-volumes "
+                    "and restart qq-bridge.",
                     bot.id,
                     address,
                     diagnostic,
@@ -300,7 +304,6 @@ def create_app(settings: Settings | None = None, config_path: str | Path | None 
             raise HTTPException(
                 status_code=401,
                 detail="Invalid OneBot webhook authentication",
-                headers={"WWW-Authenticate": "Bearer"},
             )
         webhook_failures.clear(failure_key)
         webhook_auth_diagnostics.clear(f"webhook-auth-diagnostic:{bot.id}:{address}")

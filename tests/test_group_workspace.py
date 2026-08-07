@@ -9,6 +9,7 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from neoqbot.adapters.onebot import onebot_plain_text
 from neoqbot.app import create_app
 from neoqbot.auth import GuiSession
 from neoqbot.config import Settings
@@ -36,6 +37,38 @@ def announcement(
     )
 
 
+class OneBotPlainTextTests(unittest.TestCase):
+    def test_structured_notice_message_uses_its_text_field(self) -> None:
+        self.assertEqual(
+            onebot_plain_text(
+                {
+                    "text": "公告正文",
+                    "image": [{"id": "image-1", "width": 1200, "height": 600}],
+                }
+            ),
+            "公告正文",
+        )
+
+    def test_onebot_segment_dict_uses_its_text_data(self) -> None:
+        self.assertEqual(
+            onebot_plain_text({"type": "text", "data": {"text": "segment text"}}),
+            "segment text",
+        )
+
+    def test_saved_onebot_segment_list_payload_uses_text_data(self) -> None:
+        self.assertEqual(
+            Database._announcement_payload_text(
+                {
+                    "message": [
+                        {"type": "text", "data": {"text": "archived text"}},
+                        {"type": "image", "data": {"file": "image.png"}},
+                    ]
+                }
+            ),
+            "archived text",
+        )
+
+
 class AnnouncementArchiveTests(unittest.TestCase):
     def test_cross_bot_sync_is_group_level_idempotent(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
@@ -61,6 +94,144 @@ class AnnouncementArchiveTests(unittest.TestCase):
             records = database.recent_records("announcements", group_id="100", limit=10)
             self.assertEqual(len(records), 1)
             self.assertEqual(records[0]["author_id"], "owner")
+
+    def test_transport_damaged_same_source_slot_is_idempotent_and_keeps_clean_text(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            database = Database(Path(directory) / "records.db")
+            database.initialize()
+            published = datetime(2026, 8, 6, 4, 15, 7, tzinfo=UTC)
+            clean = "群公告同步应保存完整正文，并在后续轮询中保持唯一记录。"
+            damaged = clean.replace("完整", "完\ufffd", 1)
+
+            self.assertTrue(
+                database.upsert_announcement(
+                    announcement("bot-a", content=damaged, published_at=published)
+                )
+            )
+            self.assertFalse(
+                database.upsert_announcement(
+                    announcement("bot-a", content=clean, published_at=published)
+                )
+            )
+            self.assertFalse(
+                database.upsert_announcement(
+                    announcement("bot-a", content=damaged, published_at=published)
+                )
+            )
+
+            records = database.recent_records("announcements", group_id="100", limit=10)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["content"], clean)
+            self.assertEqual(
+                records[0]["content_hash"],
+                database._announcement_hash(
+                    announcement("bot-a", content=clean, published_at=published)
+                ),
+            )
+
+    def test_transport_damaged_versions_without_publish_time_are_deduplicated(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            database = Database(Path(directory) / "records.db")
+            database.initialize()
+            clean = "A notice without a publish timestamp should still remain unique."
+            damaged = clean.replace("timestamp", "time\ufffdstamp", 1)
+
+            self.assertTrue(database.upsert_announcement(announcement("bot-a", content=damaged)))
+            self.assertFalse(database.upsert_announcement(announcement("bot-b", content=clean)))
+
+            records = database.recent_records("announcements", group_id="100", limit=10)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["content"], clean)
+
+    def test_transport_damage_does_not_merge_known_and_missing_publish_slots(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            database = Database(Path(directory) / "records.db")
+            database.initialize()
+            published = datetime(2026, 8, 6, 4, 15, 7, tzinfo=UTC)
+            clean = "A timestamped revision must not absorb an undated archived version."
+            damaged = clean.replace("archived", "arch\ufffdved", 1)
+
+            self.assertTrue(database.upsert_announcement(announcement("bot-a", content=damaged)))
+            self.assertTrue(
+                database.upsert_announcement(
+                    announcement("bot-a", content=clean, published_at=published)
+                )
+            )
+
+            records = database.recent_records("announcements", group_id="100", limit=10)
+            self.assertEqual(len(records), 2)
+            self.assertEqual(sum(int(record["is_current"]) for record in records), 1)
+
+    def test_transport_marker_does_not_hide_a_real_small_edit(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            database = Database(Path(directory) / "records.db")
+            database.initialize()
+            published = datetime(2026, 8, 6, 4, 15, 7, tzinfo=UTC)
+            original = "Policy version one: " + "stable announcement text. " * 20
+            revised = original.replace("version one", "version two").replace(
+                "text", "te\ufffdxt", 1
+            )
+
+            self.assertTrue(
+                database.upsert_announcement(
+                    announcement("bot-a", content=original, published_at=published)
+                )
+            )
+            self.assertTrue(
+                database.upsert_announcement(
+                    announcement("bot-a", content=revised, published_at=published)
+                )
+            )
+
+            records = database.recent_records("announcements", group_id="100", limit=10)
+            self.assertEqual(len(records), 2)
+            current = next(record for record in records if record["is_current"])
+            self.assertEqual(current["content"], revised)
+
+    def test_transport_body_upgrade_merges_published_content_conflict(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            database = Database(Path(directory) / "records.db")
+            database.initialize()
+            published = datetime(2026, 8, 6, 4, 15, 7, tzinfo=UTC)
+            clean = "The announcement body is complete and stable."
+            damaged = clean.replace("complete", "comp\ufffdete", 1)
+
+            self.assertTrue(
+                database.upsert_announcement(
+                    announcement(
+                        "bot-a",
+                        announcement_id="notice-a",
+                        content=damaged,
+                        published_at=published,
+                    )
+                )
+            )
+            self.assertTrue(
+                database.upsert_announcement(
+                    announcement(
+                        "bot-b",
+                        announcement_id="notice-b",
+                        content=clean,
+                        published_at=published,
+                    )
+                )
+            )
+            self.assertFalse(
+                database.upsert_announcement(
+                    announcement(
+                        "bot-a",
+                        announcement_id="notice-a",
+                        content=clean,
+                        published_at=published,
+                    )
+                )
+            )
+
+            records = database.recent_records("announcements", group_id="100", limit=10)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["content"], clean)
+            self.assertEqual(records[0]["source_bot_ids_json"], ["bot-a", "bot-b"])
+            self.assertEqual(records[0]["source_announcement_ids_json"], ["notice-a", "notice-b"])
 
     def test_same_content_and_publish_minute_deduplicates_different_notice_ids(self) -> None:
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
@@ -227,6 +398,7 @@ class AnnouncementArchiveTests(unittest.TestCase):
                         '["bot-b"]',
                     ),
                 )
+                connection.execute("DELETE FROM migration_markers")
                 connection.commit()
             finally:
                 connection.close()
@@ -236,6 +408,249 @@ class AnnouncementArchiveTests(unittest.TestCase):
             self.assertEqual(len(records), 1)
             self.assertEqual(records[0]["source_bot_ids_json"], ["bot-a", "bot-b"])
             self.assertEqual(records[0]["source_announcement_ids_json"], ["notice-1", "notice-2"])
+
+    def test_initialize_collapses_transport_damaged_source_versions(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            path = Path(directory) / "legacy.db"
+            database = Database(path)
+            database.initialize()
+            published = datetime(2026, 8, 6, 4, 15, 7, tzinfo=UTC)
+            clean = "群公告同步应保存完整正文，并在后续轮询中保持唯一记录。"
+            damaged = clean.replace("完整", "完\ufffd", 1)
+            now = datetime.now(UTC).isoformat()
+            connection = sqlite3.connect(path)
+            try:
+                for content in (damaged, clean):
+                    stored_content = f"{{'text': {content!r}, 'image': []}}"
+                    source_payload = json.dumps(
+                        {"message": {"text": content, "image": []}}, ensure_ascii=False
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO announcements (
+                            bot_id, announcement_id, group_id, content_hash, title, content,
+                            author_id, published_at, source_payload_json, first_seen_at,
+                            last_seen_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "bot-a",
+                            "notice-1",
+                            "100",
+                            database._announcement_hash(
+                                announcement(
+                                    "bot-a", content=stored_content, published_at=published
+                                )
+                            ),
+                            "Group rules",
+                            stored_content,
+                            "owner",
+                            published.isoformat(),
+                            source_payload,
+                            now,
+                            now,
+                        ),
+                    )
+                connection.execute("DELETE FROM migration_markers")
+                connection.commit()
+            finally:
+                connection.close()
+
+            database.initialize()
+            records = database.recent_records("announcements", group_id="100", limit=10)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["content"], clean)
+            self.assertEqual(
+                records[0]["content_hash"],
+                database._announcement_hash(
+                    announcement("bot-a", content=clean, published_at=published)
+                ),
+            )
+
+    def test_initialize_keeps_content_rollbacks_at_distinct_publish_slots(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            path = Path(directory) / "records.db"
+            database = Database(path)
+            database.initialize()
+            published = datetime(2026, 8, 6, 4, 15, 7, tzinfo=UTC)
+            versions = [
+                ("Version A", published),
+                ("Version B", published + timedelta(minutes=1)),
+                ("Version A", published + timedelta(minutes=2)),
+            ]
+            for content, version_time in versions:
+                self.assertTrue(
+                    database.upsert_announcement(
+                        announcement(
+                            "bot-a",
+                            content=content,
+                            published_at=version_time,
+                        )
+                    )
+                )
+
+            connection = sqlite3.connect(path)
+            try:
+                connection.execute("DELETE FROM migration_markers")
+                connection.commit()
+            finally:
+                connection.close()
+            database.initialize()
+            records = database.recent_records("announcements", group_id="100", limit=10)
+            self.assertEqual(len(records), 3)
+            current = next(record for record in records if record["is_current"])
+            self.assertEqual(current["content"], "Version A")
+            self.assertEqual(
+                current["published_slot"],
+                (published + timedelta(minutes=2)).replace(second=0).isoformat(),
+            )
+
+    def test_initialize_uses_latest_observation_when_clean_keeper_has_an_older_id(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            path = Path(directory) / "legacy.db"
+            database = Database(path)
+            database.initialize()
+            published = datetime(2026, 8, 6, 4, 15, 7, tzinfo=UTC)
+            clean = "The clean rollback body should remain the current archived version."
+            damaged = clean.replace("rollback", "roll\ufffdack", 1)
+            revised = "A genuinely different intermediate announcement revision."
+            observed = datetime(2026, 8, 6, 5, 0, tzinfo=UTC)
+            connection = sqlite3.connect(path)
+            try:
+                connection.execute("DROP INDEX uq_announcements_group_version")
+                connection.execute("DROP INDEX uq_announcements_group_published_content")
+                connection.execute("DELETE FROM announcements")
+                for index, (content, seen_at) in enumerate(
+                    (
+                        (clean, observed),
+                        (revised, observed + timedelta(minutes=1)),
+                        (damaged, observed + timedelta(minutes=2)),
+                    ),
+                    start=1,
+                ):
+                    source_payload = json.dumps(
+                        {"message": {"text": content, "image": []}}, ensure_ascii=False
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO announcements (
+                            bot_id, announcement_id, group_id, content_hash, title, content,
+                            author_id, published_at, source_payload_json, first_seen_at,
+                            last_seen_at, published_slot
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            "bot-a",
+                            "notice-1",
+                            "100",
+                            database._announcement_hash(
+                                announcement("bot-a", content=content, published_at=published)
+                            ),
+                            "Group rules",
+                            content,
+                            "owner",
+                            published.isoformat(),
+                            source_payload,
+                            (observed + timedelta(seconds=index)).isoformat(),
+                            seen_at.isoformat(),
+                            published.replace(second=0).isoformat(),
+                        ),
+                    )
+                connection.execute("DELETE FROM migration_markers")
+                connection.commit()
+            finally:
+                connection.close()
+
+            database.initialize()
+            records = database.recent_records("announcements", group_id="100", limit=10)
+            self.assertEqual(len(records), 2)
+            current = next(record for record in records if record["is_current"])
+            self.assertEqual(current["content"], clean)
+            self.assertEqual(current["last_seen_at"], (observed + timedelta(minutes=2)).isoformat())
+
+    def test_announcement_archive_migration_runs_only_once_after_marker_is_written(self) -> None:
+        class CountingDatabase(Database):
+            def __init__(self, path: Path) -> None:
+                super().__init__(path)
+                self.migration_runs = 0
+
+            def _migrate_announcement_archive(self, connection: sqlite3.Connection) -> None:
+                self.migration_runs += 1
+                super()._migrate_announcement_archive(connection)
+
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            database = CountingDatabase(Path(directory) / "records.db")
+            database.initialize()
+            database.initialize()
+            self.assertEqual(database.migration_runs, 1)
+
+    def test_initialize_rebuilds_legacy_content_version_unique_constraint(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            path = Path(directory) / "legacy.db"
+            connection = sqlite3.connect(path)
+            try:
+                connection.execute(
+                    """
+                    CREATE TABLE announcements (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        bot_id TEXT NOT NULL DEFAULT 'default',
+                        announcement_id TEXT NOT NULL,
+                        group_id TEXT NOT NULL,
+                        content_hash TEXT NOT NULL,
+                        title TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        author_id TEXT NOT NULL,
+                        published_at TEXT,
+                        source_payload_json TEXT NOT NULL,
+                        first_seen_at TEXT NOT NULL,
+                        last_seen_at TEXT NOT NULL,
+                        sync_status TEXT NOT NULL DEFAULT 'pending',
+                        sync_attempts INTEGER NOT NULL DEFAULT 0,
+                        sync_error TEXT,
+                        sync_claimed_at TEXT,
+                        is_current INTEGER NOT NULL DEFAULT 1,
+                        is_deleted INTEGER NOT NULL DEFAULT 0,
+                        deleted_at TEXT,
+                        source_bot_ids_json TEXT NOT NULL DEFAULT '[]',
+                        source_announcement_ids_json TEXT NOT NULL DEFAULT '[]',
+                        published_slot TEXT NOT NULL DEFAULT '',
+                        UNIQUE(bot_id, group_id, announcement_id, content_hash)
+                    )
+                    """
+                )
+                connection.commit()
+            finally:
+                connection.close()
+
+            database = Database(path)
+            database.initialize()
+            published = datetime(2026, 8, 6, 4, 15, 7, tzinfo=UTC)
+            self.assertTrue(
+                database.upsert_announcement(
+                    announcement("bot-a", content="Version A", published_at=published)
+                )
+            )
+            self.assertTrue(
+                database.upsert_announcement(
+                    announcement(
+                        "bot-a",
+                        content="Version B",
+                        published_at=published + timedelta(minutes=1),
+                    )
+                )
+            )
+            self.assertTrue(
+                database.upsert_announcement(
+                    announcement(
+                        "bot-a",
+                        content="Version A",
+                        published_at=published + timedelta(minutes=2),
+                    )
+                )
+            )
+
+            records = database.recent_records("announcements", group_id="100", limit=10)
+            self.assertEqual(len(records), 3)
 
 
 class GroupRecordManagementTests(unittest.TestCase):

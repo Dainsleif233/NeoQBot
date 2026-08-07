@@ -7,6 +7,7 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
@@ -84,13 +85,17 @@ CREATE TABLE IF NOT EXISTS announcements (
     deleted_at TEXT,
     source_bot_ids_json TEXT NOT NULL DEFAULT '[]',
     source_announcement_ids_json TEXT NOT NULL DEFAULT '[]',
-    published_slot TEXT NOT NULL DEFAULT '',
-    UNIQUE(bot_id, group_id, announcement_id, content_hash)
+    published_slot TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_announcements_sync_status
 ON announcements(sync_status, id);
 CREATE INDEX IF NOT EXISTS idx_announcements_group_seen
 ON announcements(group_id, last_seen_at DESC);
+
+CREATE TABLE IF NOT EXISTS migration_markers (
+    key TEXT PRIMARY KEY,
+    applied_at TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS audit_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -124,6 +129,8 @@ CREATE TABLE IF NOT EXISTS gui_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_gui_sessions_expires ON gui_sessions(expires_at);
 """
+
+ANNOUNCEMENT_ARCHIVE_MIGRATION_KEY = "announcement_archive_dedup_v2"
 
 
 class Database:
@@ -189,7 +196,21 @@ class Database:
                 "published_slot",
                 "TEXT NOT NULL DEFAULT ''",
             )
-            self._migrate_announcement_archive(connection)
+            rebuilt_announcement_table = self._rebuild_announcement_table_without_legacy_unique(
+                connection
+            )
+            marker = connection.execute(
+                "SELECT 1 FROM migration_markers WHERE key = ?",
+                (ANNOUNCEMENT_ARCHIVE_MIGRATION_KEY,),
+            ).fetchone()
+            if rebuilt_announcement_table or marker is None:
+                self._migrate_announcement_archive(connection)
+                connection.execute(
+                    "INSERT OR REPLACE INTO migration_markers (key, applied_at) VALUES (?, ?)",
+                    (ANNOUNCEMENT_ARCHIVE_MIGRATION_KEY, utc_now().isoformat()),
+                )
+            else:
+                self._ensure_announcement_archive_indexes(connection)
 
     @staticmethod
     def _ensure_column(
@@ -200,6 +221,68 @@ class Database:
         }
         if column not in columns:
             connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+
+    @staticmethod
+    def _rebuild_announcement_table_without_legacy_unique(connection: sqlite3.Connection) -> bool:
+        row = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'announcements'"
+        ).fetchone()
+        definition = "".join(str(row["sql"] or "").upper().split()) if row else ""
+        legacy_unique = "UNIQUE(BOT_ID,GROUP_ID,ANNOUNCEMENT_ID,CONTENT_HASH)"
+        if legacy_unique not in definition:
+            return False
+        connection.execute("DROP INDEX IF EXISTS uq_announcements_group_version")
+        connection.execute("DROP INDEX IF EXISTS uq_announcements_group_published_content")
+        connection.execute("DROP INDEX IF EXISTS idx_announcements_sync_status")
+        connection.execute("DROP INDEX IF EXISTS idx_announcements_group_seen")
+        connection.execute("ALTER TABLE announcements RENAME TO announcements_legacy")
+        connection.execute(
+            """
+            CREATE TABLE announcements (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                bot_id TEXT NOT NULL DEFAULT 'default',
+                announcement_id TEXT NOT NULL,
+                group_id TEXT NOT NULL,
+                content_hash TEXT NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                author_id TEXT NOT NULL,
+                published_at TEXT,
+                source_payload_json TEXT NOT NULL,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                sync_status TEXT NOT NULL DEFAULT 'pending',
+                sync_attempts INTEGER NOT NULL DEFAULT 0,
+                sync_error TEXT,
+                sync_claimed_at TEXT,
+                is_current INTEGER NOT NULL DEFAULT 1,
+                is_deleted INTEGER NOT NULL DEFAULT 0,
+                deleted_at TEXT,
+                source_bot_ids_json TEXT NOT NULL DEFAULT '[]',
+                source_announcement_ids_json TEXT NOT NULL DEFAULT '[]',
+                published_slot TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        columns = (
+            "id, bot_id, announcement_id, group_id, content_hash, title, content, author_id, "
+            "published_at, source_payload_json, first_seen_at, last_seen_at, sync_status, "
+            "sync_attempts, sync_error, sync_claimed_at, is_current, is_deleted, deleted_at, "
+            "source_bot_ids_json, source_announcement_ids_json, published_slot"
+        )
+        connection.execute(
+            f"INSERT INTO announcements ({columns}) SELECT {columns} FROM announcements_legacy"
+        )
+        connection.execute("DROP TABLE announcements_legacy")
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_announcements_sync_status "
+            "ON announcements(sync_status, id)"
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_announcements_group_seen "
+            "ON announcements(group_id, last_seen_at DESC)"
+        )
+        return True
 
     @staticmethod
     def _source_bot_ids(row: sqlite3.Row) -> set[str]:
@@ -222,6 +305,95 @@ class Database:
         return {item for item in announcement_ids if item}
 
     @staticmethod
+    def _announcement_payload_text(source_payload: object) -> str | None:
+        """Extract the textual notice body from a saved OneBot source payload."""
+        if isinstance(source_payload, str):
+            try:
+                payload = json.loads(source_payload)
+            except (json.JSONDecodeError, TypeError):
+                return None
+        else:
+            payload = source_payload
+        if not isinstance(payload, dict):
+            return None
+        for field in ("message", "content"):
+            value = payload.get(field)
+            if isinstance(value, str):
+                return value
+            if isinstance(value, dict):
+                kind = value.get("type")
+                data = value.get("data")
+                if kind == "text" and isinstance(data, dict):
+                    return str(data.get("text", ""))
+                for text_field in ("text", "content", "message"):
+                    text = value.get(text_field)
+                    if isinstance(text, str):
+                        return text
+            if isinstance(value, list):
+                parts: list[str] = []
+                for segment in value:
+                    if not isinstance(segment, dict):
+                        continue
+                    data = segment.get("data")
+                    if segment.get("type") == "text" and isinstance(data, dict):
+                        parts.append(str(data.get("text", "")))
+                if parts:
+                    return "".join(parts)
+        return None
+
+    @classmethod
+    def _announcement_row_text(cls, row: sqlite3.Row) -> tuple[str, str]:
+        payload_text = cls._announcement_payload_text(row["source_payload_json"])
+        return str(row["title"]), payload_text if payload_text is not None else str(row["content"])
+
+    @classmethod
+    def _announcement_row_published_slot(cls, row: sqlite3.Row) -> str:
+        return str(row["published_slot"] or "") or cls._announcement_published_slot(
+            row["published_at"]
+        )
+
+    @classmethod
+    def _announcement_source_matches(
+        cls, row: sqlite3.Row, announcement_id: str, published_slot: str
+    ) -> bool:
+        if announcement_id not in cls._source_announcement_ids(row):
+            return False
+        row_slot = cls._announcement_row_published_slot(row)
+        return not row_slot or not published_slot or row_slot == published_slot
+
+    @classmethod
+    def _announcement_source_slot_matches_strict(
+        cls, row: sqlite3.Row, announcement_id: str, published_slot: str
+    ) -> bool:
+        """Match a source version only when its publish-time identity is unambiguous."""
+        return (
+            announcement_id in cls._source_announcement_ids(row)
+            and cls._announcement_row_published_slot(row) == published_slot
+        )
+
+    @classmethod
+    def _announcement_rows_should_merge(cls, left: sqlite3.Row, right: sqlite3.Row) -> bool:
+        if str(left["group_id"]) != str(right["group_id"]):
+            return False
+        left_title, left_content = cls._announcement_row_text(left)
+        right_title, right_content = cls._announcement_row_text(right)
+        left_ids = cls._source_announcement_ids(left)
+        right_ids = cls._source_announcement_ids(right)
+        same_source = bool(left_ids & right_ids)
+        left_slot = cls._announcement_row_published_slot(left)
+        right_slot = cls._announcement_row_published_slot(right)
+        same_published_slot = bool(left_slot and left_slot == right_slot)
+        same_source_slot = same_source and left_slot == right_slot
+        same_content = cls._announcement_content_hash(
+            left_title, left_content
+        ) == cls._announcement_content_hash(right_title, right_content)
+        if same_content:
+            return same_published_slot or (same_source and not left_slot and not right_slot)
+        return same_source_slot and cls._is_transport_damaged_announcement(
+            left_title, left_content, right_title, right_content
+        )
+
+    @staticmethod
     def _announcement_published_slot(value: datetime | str | None) -> str:
         if value is None or value == "":
             return ""
@@ -234,25 +406,35 @@ class Database:
         return published_at.astimezone(UTC).replace(second=0, microsecond=0).isoformat()
 
     def _migrate_announcement_archive(self, connection: sqlite3.Connection) -> None:
-        """Collapse historical cross-Bot duplicates before enforcing group-level identity."""
+        """Collapse cross-Bot and damaged repeated notice records before indexing."""
         connection.execute("DROP INDEX IF EXISTS uq_announcements_group_version")
         connection.execute("DROP INDEX IF EXISTS uq_announcements_group_published_content")
         rows = connection.execute("SELECT * FROM announcements ORDER BY id ASC").fetchall()
-        grouped: dict[tuple[str, str, str], list[sqlite3.Row]] = {}
+        grouped: list[list[sqlite3.Row]] = []
         for row in rows:
-            canonical_hash = self._announcement_content_hash(str(row["title"]), str(row["content"]))
-            published_slot = self._announcement_published_slot(row["published_at"])
-            source_identity = (
-                f"published:{published_slot}"
-                if published_slot
-                else f"source:{row['announcement_id']}"
-            )
-            key = (str(row["group_id"]), canonical_hash, source_identity)
-            grouped.setdefault(key, []).append(row)
+            matching_indexes = [
+                index
+                for index, duplicates in enumerate(grouped)
+                if any(
+                    self._announcement_rows_should_merge(row, existing) for existing in duplicates
+                )
+            ]
+            if not matching_indexes:
+                grouped.append([row])
+                continue
+            merged = [row]
+            for index in reversed(matching_indexes):
+                merged.extend(grouped.pop(index))
+            grouped.append(merged)
 
         status_priority = {"synced": 4, "pending": 3, "failed": 2, "syncing": 1}
-        for (_, canonical_hash, _), duplicates in grouped.items():
-            keeper = duplicates[0]
+        for duplicates in grouped:
+            keeper = min(
+                duplicates,
+                key=lambda row: self._announcement_integrity_key(*self._announcement_row_text(row)),
+            )
+            title, content = self._announcement_row_text(keeper)
+            canonical_hash = self._announcement_content_hash(title, content)
             bot_ids: set[str] = set()
             announcement_ids: set[str] = set()
             for row in duplicates:
@@ -268,16 +450,15 @@ class Database:
             errors = [str(row["sync_error"]) for row in duplicates if row["sync_error"]]
             authors = [str(row["author_id"]) for row in duplicates if row["author_id"]]
             published = [str(row["published_at"]) for row in duplicates if row["published_at"]]
-            source_payload = max(
-                (str(row["source_payload_json"] or "{}") for row in duplicates),
-                key=len,
-            )
-            for duplicate in duplicates[1:]:
-                connection.execute("DELETE FROM announcements WHERE id = ?", (duplicate["id"],))
+            source_payload = str(keeper["source_payload_json"] or "{}")
+            for duplicate in duplicates:
+                if int(duplicate["id"]) != int(keeper["id"]):
+                    connection.execute("DELETE FROM announcements WHERE id = ?", (duplicate["id"],))
             connection.execute(
                 """
                 UPDATE announcements
-                SET content_hash = ?, author_id = ?, published_at = ?, source_payload_json = ?,
+                SET content_hash = ?, title = ?, content = ?, author_id = ?, published_at = ?,
+                    source_payload_json = ?,
                     first_seen_at = ?, last_seen_at = ?, sync_status = ?,
                     sync_attempts = ?, sync_error = ?, sync_claimed_at = NULL,
                     is_deleted = ?, deleted_at = ?, source_bot_ids_json = ?,
@@ -286,6 +467,8 @@ class Database:
                 """,
                 (
                     canonical_hash,
+                    title,
+                    content,
                     authors[0] if authors else "",
                     min(published) if published else None,
                     source_payload,
@@ -303,14 +486,15 @@ class Database:
                     ),
                     json.dumps(sorted(bot_ids), ensure_ascii=False),
                     json.dumps(sorted(announcement_ids), ensure_ascii=False),
-                    self._announcement_published_slot(min(published) if published else None),
+                    self._announcement_published_slot(min(published) if published else None)
+                    or self._announcement_row_published_slot(keeper),
                     int(keeper["id"]),
                 ),
             )
 
         connection.execute("UPDATE announcements SET is_current = 0")
         versions = connection.execute(
-            "SELECT * FROM announcements ORDER BY group_id, id DESC"
+            "SELECT * FROM announcements ORDER BY group_id, last_seen_at DESC, id DESC"
         ).fetchall()
         current_keys: set[tuple[str, str]] = set()
         for row in versions:
@@ -320,10 +504,14 @@ class Database:
                 continue
             current_keys.update((group_id, source_id) for source_id in source_ids)
             connection.execute("UPDATE announcements SET is_current = 1 WHERE id = ?", (row["id"],))
+        self._ensure_announcement_archive_indexes(connection)
+
+    @staticmethod
+    def _ensure_announcement_archive_indexes(connection: sqlite3.Connection) -> None:
         connection.execute(
             """
             CREATE UNIQUE INDEX IF NOT EXISTS uq_announcements_group_version
-            ON announcements(group_id, announcement_id, content_hash)
+            ON announcements(group_id, announcement_id, content_hash, published_slot)
             """
         )
         connection.execute(
@@ -495,17 +683,263 @@ class Database:
             )
 
     @staticmethod
-    def _announcement_content_hash(title: str, content: str) -> str:
-        def normalized_text(value: str) -> str:
-            lines = value.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-            return "\n".join(line.rstrip() for line in lines).strip()
+    def _normalize_announcement_text(value: str) -> str:
+        lines = value.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        return "\n".join(line.rstrip() for line in lines).strip()
 
-        normalized = "\n".join([normalized_text(title), normalized_text(content)])
+    @classmethod
+    def _announcement_content_hash(cls, title: str, content: str) -> str:
+        normalized = "\n".join(
+            [
+                cls._normalize_announcement_text(title),
+                cls._normalize_announcement_text(content),
+            ]
+        )
         return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
     @classmethod
     def _announcement_hash(cls, announcement: Announcement) -> str:
         return cls._announcement_content_hash(announcement.title, announcement.content)
+
+    @classmethod
+    def _announcement_row_hash(cls, row: sqlite3.Row) -> str:
+        title, content = cls._announcement_row_text(row)
+        return cls._announcement_content_hash(title, content)
+
+    @classmethod
+    def _announcement_integrity_key(cls, title: str, content: str) -> tuple[int, int]:
+        normalized = "\n".join(
+            [
+                cls._normalize_announcement_text(title),
+                cls._normalize_announcement_text(content),
+            ]
+        )
+        return normalized.count("\ufffd"), -len(normalized)
+
+    @staticmethod
+    def _transport_replacement_capacity(replacement_count: int) -> int:
+        """A malformed UTF-8 character may surface as one to three U+FFFDs."""
+        return max(1, (replacement_count + 2) // 3)
+
+    @classmethod
+    def _transport_mismatch_is_safe(cls, left: str, right: str) -> bool:
+        left_replacements = left.count("\ufffd")
+        right_replacements = right.count("\ufffd")
+        if not left_replacements and not right_replacements:
+            return False
+        left_plain = left.replace("\ufffd", "")
+        right_plain = right.replace("\ufffd", "")
+        if left_plain and right_plain:
+            return False
+        if left_plain:
+            return right_replacements > 0 and len(
+                left_plain
+            ) <= cls._transport_replacement_capacity(right_replacements)
+        if right_plain:
+            return left_replacements > 0 and len(
+                right_plain
+            ) <= cls._transport_replacement_capacity(left_replacements)
+        return True
+
+    @classmethod
+    def _is_transport_damaged_announcement(
+        cls, left_title: str, left_content: str, right_title: str, right_content: str
+    ) -> bool:
+        left = "\n".join(
+            [
+                cls._normalize_announcement_text(left_title),
+                cls._normalize_announcement_text(left_content),
+            ]
+        )
+        right = "\n".join(
+            [
+                cls._normalize_announcement_text(right_title),
+                cls._normalize_announcement_text(right_content),
+            ]
+        )
+        if not left or not right or "\ufffd" not in left + right:
+            return False
+        mismatches = 0
+        for tag, left_start, left_end, right_start, right_end in SequenceMatcher(
+            None, left, right, autojunk=False
+        ).get_opcodes():
+            if tag == "equal":
+                continue
+            mismatches += 1
+            if not cls._transport_mismatch_is_safe(
+                left[left_start:left_end], right[right_start:right_end]
+            ):
+                return False
+        return mismatches > 0
+
+    @staticmethod
+    def _announcement_sync_status_priority(status: str) -> int:
+        return {"synced": 4, "pending": 3, "failed": 2, "syncing": 1}.get(status, 0)
+
+    def _merge_announcement_replacement_conflict(
+        self,
+        connection: sqlite3.Connection,
+        row: sqlite3.Row,
+        conflict: sqlite3.Row,
+        announcement: Announcement,
+        *,
+        now: str,
+        content_hash: str,
+        published_at: str | None,
+        published_slot: str,
+    ) -> None:
+        """Merge a body upgrade with an existing same-content/same-slot record."""
+        target, other = row, conflict
+        if str(conflict["sync_status"]) == "syncing" and str(row["sync_status"]) != "syncing":
+            target, other = conflict, row
+        merged_rows = (target, other)
+        bot_ids: set[str] = {announcement.bot_id}
+        announcement_ids = {announcement.announcement_id}
+        for item in merged_rows:
+            bot_ids.update(self._source_bot_ids(item))
+            announcement_ids.update(self._source_announcement_ids(item))
+        source_payload = json.dumps(announcement.source_payload, ensure_ascii=False)
+        authors = [str(item["author_id"]) for item in merged_rows if item["author_id"]]
+        published_values = [
+            str(value)
+            for value in (*[item["published_at"] for item in merged_rows], published_at)
+            if value
+        ]
+        statuses = [str(item["sync_status"]) for item in merged_rows]
+        if str(target["sync_status"]) == "syncing":
+            sync_status = "syncing"
+            sync_claimed_at = target["sync_claimed_at"]
+        else:
+            sync_status = max(statuses, key=self._announcement_sync_status_priority)
+            sync_claimed_at = None
+        errors = [str(item["sync_error"]) for item in merged_rows if item["sync_error"]]
+        sync_error = errors[-1] if sync_status == "failed" and errors else None
+        first_seen_at = min(str(item["first_seen_at"]) for item in merged_rows)
+        sync_attempts = max(int(item["sync_attempts"]) for item in merged_rows)
+        current = int(any(bool(item["is_current"]) for item in merged_rows))
+        effective_slot = (
+            published_slot
+            or self._announcement_row_published_slot(target)
+            or self._announcement_row_published_slot(other)
+        )
+        connection.execute("DELETE FROM announcements WHERE id = ?", (int(other["id"]),))
+        connection.execute(
+            """
+            UPDATE announcements
+            SET content_hash = ?, title = ?, content = ?, source_payload_json = ?,
+                first_seen_at = ?, last_seen_at = ?, sync_status = ?, sync_attempts = ?,
+                sync_error = ?, sync_claimed_at = ?, is_current = ?, is_deleted = 0,
+                deleted_at = NULL, source_bot_ids_json = ?, source_announcement_ids_json = ?,
+                author_id = ?, published_at = ?, published_slot = ?
+            WHERE id = ?
+            """,
+            (
+                content_hash,
+                announcement.title,
+                announcement.content,
+                source_payload,
+                first_seen_at,
+                now,
+                sync_status,
+                sync_attempts,
+                sync_error,
+                sync_claimed_at,
+                current,
+                json.dumps(sorted(bot_ids), ensure_ascii=False),
+                json.dumps(sorted(announcement_ids), ensure_ascii=False),
+                authors[0] if authors else announcement.author_id,
+                min(published_values) if published_values else None,
+                effective_slot,
+                int(target["id"]),
+            ),
+        )
+
+    def _touch_announcement(
+        self,
+        connection: sqlite3.Connection,
+        row: sqlite3.Row,
+        announcement: Announcement,
+        *,
+        now: str,
+        content_hash: str,
+        published_at: str | None,
+        published_slot: str,
+        replace_body: bool,
+    ) -> None:
+        if replace_body and published_slot:
+            conflict = connection.execute(
+                """
+                SELECT * FROM announcements
+                WHERE group_id = ? AND content_hash = ? AND published_slot = ? AND id != ?
+                ORDER BY is_current DESC, id DESC LIMIT 1
+                """,
+                (row["group_id"], content_hash, published_slot, int(row["id"])),
+            ).fetchone()
+            if conflict is not None:
+                self._merge_announcement_replacement_conflict(
+                    connection,
+                    row,
+                    conflict,
+                    announcement,
+                    now=now,
+                    content_hash=content_hash,
+                    published_at=published_at,
+                    published_slot=published_slot,
+                )
+                return
+        bot_ids = self._source_bot_ids(row) | {announcement.bot_id}
+        announcement_ids = self._source_announcement_ids(row) | {announcement.announcement_id}
+        source_payload = json.dumps(announcement.source_payload, ensure_ascii=False)
+        common_values = (
+            now,
+            json.dumps(sorted(bot_ids), ensure_ascii=False),
+            json.dumps(sorted(announcement_ids), ensure_ascii=False),
+            announcement.author_id,
+            published_at,
+            published_slot,
+        )
+        if replace_body:
+            connection.execute(
+                """
+                UPDATE announcements
+                SET content_hash = ?, title = ?, content = ?, source_payload_json = ?,
+                    last_seen_at = ?, is_deleted = 0, deleted_at = NULL,
+                    source_bot_ids_json = ?, source_announcement_ids_json = ?,
+                    author_id = CASE WHEN author_id = '' THEN ? ELSE author_id END,
+                    published_at = COALESCE(published_at, ?),
+                    published_slot = CASE
+                        WHEN published_slot = '' THEN ? ELSE published_slot
+                    END
+                WHERE id = ?
+                """,
+                (
+                    content_hash,
+                    announcement.title,
+                    announcement.content,
+                    source_payload,
+                    *common_values,
+                    int(row["id"]),
+                ),
+            )
+            return
+        connection.execute(
+            """
+            UPDATE announcements
+            SET last_seen_at = ?, is_deleted = 0, deleted_at = NULL,
+                source_bot_ids_json = ?, source_announcement_ids_json = ?,
+                author_id = CASE WHEN author_id = '' THEN ? ELSE author_id END,
+                published_at = COALESCE(published_at, ?),
+                published_slot = CASE
+                    WHEN published_slot = '' THEN ? ELSE published_slot
+                END,
+                source_payload_json = CASE
+                    WHEN source_payload_json IN ('', '{}', 'null') THEN ?
+                    ELSE source_payload_json
+                END
+            WHERE id = ?
+            """,
+            (*common_values, source_payload, int(row["id"])),
+        )
 
     def upsert_announcement(self, announcement: Announcement) -> bool:
         now = utc_now().isoformat()
@@ -513,18 +947,76 @@ class Database:
         published_at = announcement.published_at.isoformat() if announcement.published_at else None
         published_slot = self._announcement_published_slot(announcement.published_at)
         with self._lock, self._connect() as connection:
-            candidates = connection.execute(
-                """
-                SELECT * FROM announcements
-                WHERE group_id = ? AND content_hash = ?
-                """,
-                (announcement.group_id, content_hash),
+            group_rows = connection.execute(
+                "SELECT * FROM announcements WHERE group_id = ? ORDER BY is_current DESC, id DESC",
+                (announcement.group_id,),
             ).fetchall()
+            source_rows = [
+                row
+                for row in group_rows
+                if self._announcement_source_matches(
+                    row, announcement.announcement_id, published_slot
+                )
+            ]
+            existing = next(
+                (row for row in source_rows if self._announcement_row_hash(row) == content_hash),
+                None,
+            )
+            if existing is not None:
+                title, content = self._announcement_row_text(existing)
+                self._touch_announcement(
+                    connection,
+                    existing,
+                    announcement,
+                    now=now,
+                    content_hash=content_hash,
+                    published_at=published_at,
+                    published_slot=published_slot,
+                    replace_body=(title, content) != (announcement.title, announcement.content),
+                )
+                return False
+
+            damaged_existing = next(
+                (
+                    row
+                    for row in group_rows
+                    if self._announcement_source_slot_matches_strict(
+                        row, announcement.announcement_id, published_slot
+                    )
+                    and self._is_transport_damaged_announcement(
+                        *self._announcement_row_text(row),
+                        announcement.title,
+                        announcement.content,
+                    )
+                ),
+                None,
+            )
+            if damaged_existing is not None:
+                title, content = self._announcement_row_text(damaged_existing)
+                self._touch_announcement(
+                    connection,
+                    damaged_existing,
+                    announcement,
+                    now=now,
+                    content_hash=content_hash,
+                    published_at=published_at,
+                    published_slot=published_slot,
+                    replace_body=self._announcement_integrity_key(
+                        announcement.title, announcement.content
+                    )
+                    < self._announcement_integrity_key(title, content),
+                )
+                return False
+
+            candidates = [
+                row for row in group_rows if self._announcement_row_hash(row) == content_hash
+            ]
             existing = next(
                 (
                     row
                     for row in candidates
-                    if published_slot and row["published_slot"] == published_slot
+                    if published_slot
+                    and self._announcement_row_published_slot(row) == published_slot
                 ),
                 None,
             )
@@ -533,41 +1025,23 @@ class Database:
                     (
                         row
                         for row in candidates
-                        if announcement.announcement_id in self._source_announcement_ids(row)
+                        if self._announcement_source_matches(
+                            row, announcement.announcement_id, published_slot
+                        )
                     ),
                     None,
                 )
             if existing is not None:
-                bot_ids = self._source_bot_ids(existing)
-                bot_ids.add(announcement.bot_id)
-                announcement_ids = self._source_announcement_ids(existing)
-                announcement_ids.add(announcement.announcement_id)
-                connection.execute(
-                    """
-                    UPDATE announcements
-                    SET last_seen_at = ?, is_deleted = 0, deleted_at = NULL,
-                        source_bot_ids_json = ?, source_announcement_ids_json = ?,
-                        author_id = CASE WHEN author_id = '' THEN ? ELSE author_id END,
-                        published_at = COALESCE(published_at, ?),
-                        published_slot = CASE
-                            WHEN published_slot = '' THEN ? ELSE published_slot
-                        END,
-                        source_payload_json = CASE
-                            WHEN source_payload_json IN ('', '{}', 'null') THEN ?
-                            ELSE source_payload_json
-                        END
-                    WHERE id = ?
-                    """,
-                    (
-                        now,
-                        json.dumps(sorted(bot_ids), ensure_ascii=False),
-                        json.dumps(sorted(announcement_ids), ensure_ascii=False),
-                        announcement.author_id,
-                        published_at,
-                        published_slot,
-                        json.dumps(announcement.source_payload, ensure_ascii=False),
-                        int(existing["id"]),
-                    ),
+                title, content = self._announcement_row_text(existing)
+                self._touch_announcement(
+                    connection,
+                    existing,
+                    announcement,
+                    now=now,
+                    content_hash=content_hash,
+                    published_at=published_at,
+                    published_slot=published_slot,
+                    replace_body=(title, content) != (announcement.title, announcement.content),
                 )
                 return False
 

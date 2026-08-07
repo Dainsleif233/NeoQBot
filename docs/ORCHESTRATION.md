@@ -48,8 +48,9 @@ docker compose up -d --build --force-recreate init-volumes neoqbot qq-bridge
 ```
 
 这会保留命名卷中的 QQ 登录态和业务数据，只重建容器并让两端重新读取同一份 OneBot 凭据。若日志仍有
-401，平台会写入不含 Token 明文的 `onebot_webhook_auth` 审计项，显示是否收到 Bearer Header、是否残留
-HMAC Secret，以及当前 Bot 的连接方式；不要在排查过程中输出凭据。
+401，平台会写入不含 Token 明文的 `onebot_webhook_auth` 审计项，显示是否收到 Bearer Header 或
+`X-Signature`、是否配置 HMAC Secret，以及当前 Bot 的连接方式；不要在排查过程中输出凭据。NapCat
+HTTP Client 使用其 Token 对事件原文生成 HMAC-SHA1 `X-Signature`，不会发送 Bearer Header。
 
 在 Compose 容器中运行 `neoqbot --config /app/data/config.yaml doctor` 会为内置 Bot 给出
 `event_client_configuration`。该检查只返回 URL 路径、启用状态和一致性布尔值，`ok: true` 代表持久化

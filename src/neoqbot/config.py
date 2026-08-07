@@ -478,8 +478,8 @@ class Settings(BaseSettings):
             # A previous migration could persist the Compose sidecar as an external
             # bot when a legacy webhook_secret was still present.  The exact
             # qq-bridge endpoints and shared secret files identify it unambiguously;
-            # restore bundled mode so its stale HMAC value cannot shadow NapCat's
-            # Bearer event credential.
+            # Restore bundled mode so the sidecar consistently uses the shared
+            # OneBot token as both its API credential and HTTP-event HMAC key.
             if (
                 index == 0
                 and raw_bot.get("connection_mode") == "external"
@@ -791,7 +791,9 @@ class Settings(BaseSettings):
                 errors.append(f"{prefix}.administrator_qq_ids 不能为空")
             onebot_token = resolve_secret(bot.access_token, bot.access_token_file)
             if not onebot_token:
-                errors.append(f"{prefix}.access_token 未设置，Webhook 与 OneBot API 将拒绝连接")
+                errors.append(
+                    f"{prefix}.access_token 未设置，OneBot 出站 API 调用将无法使用 Token 鉴权"
+                )
             if not bot.webhook_secret and not onebot_token:
                 errors.append(f"{prefix} 未设置 Webhook HMAC 或 Bearer Token，事件入口已安全禁用")
         if self.llm.driver == "openai_compatible":
