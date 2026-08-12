@@ -61,6 +61,77 @@ def client_ip_allowed(address: str, networks: Iterable[str]) -> bool:
     return any(client in ipaddress.ip_network(network, strict=False) for network in configured)
 
 
+def host_matches_allowed(
+    host: str,
+    allowed_hosts: Iterable[str],
+    allow_ip_hosts: bool = True,
+) -> bool:
+    """Return True if ``host`` matches any of the configured Host patterns.
+
+    Mirrors the matching used by :class:`HostValidationMiddleware` so that
+    downstream security checks (HTTPS scheme enforcement, HSTS emission) can
+    reuse the same logic without duplicating the wildcard / IP-literal rules.
+    """
+    if not host:
+        return False
+    hosts = tuple(allowed_hosts)
+    if "*" in hosts:
+        return True
+    if allow_ip_hosts:
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            pass
+        else:
+            return True
+    for pattern in hosts:
+        normalised = pattern.lower().rstrip(".")
+        if normalised.startswith("*."):
+            if host.endswith(normalised[1:]) and host != normalised[2:]:
+                return True
+        elif host == normalised:
+            return True
+    return False
+
+
+def request_appears_secure(
+    scheme: str,
+    host_header: str,
+    allowed_hosts: Iterable[str],
+    allow_ip_hosts: bool = True,
+) -> bool:
+    """Return True when a request should be treated as HTTPS for security checks.
+
+    Prefers the real connection scheme — uvicorn updates it from a trusted
+    ``X-Forwarded-Proto`` header when the connection comes from an IP listed in
+    ``app.forwarded_allow_ips``. As a fallback, accept a Host header that has
+    already passed :class:`HostValidationMiddleware` and resolves to a
+    configured non-loopback domain. Such a request can only have arrived via
+    the operator's reverse proxy, so inferring HTTPS here lets deployments
+    behind a proxy skip the ``X-Forwarded-Proto`` plumbing without weakening
+    the host-binding guarantee — the request still has to present a domain the
+    operator explicitly whitelisted.
+    """
+    if scheme == "https":
+        return True
+    host = host_header.split(":", 1)[0].lower().rstrip(".") if host_header else ""
+    if not host:
+        return False
+    # Direct loopback access — never infer HTTPS, even if ``localhost`` ends up
+    # in ``allowed_hosts`` for some reason.
+    if host == "localhost" or host.startswith("127."):
+        return False
+    # IP-literal access — also don't infer HTTPS from the configured domain
+    # list; the operator should terminate TLS for IP-based access explicitly.
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
+        return False
+    return host_matches_allowed(host, allowed_hosts, allow_ip_hosts)
+
+
 class HostValidationMiddleware:
     """Allow configured hostnames and, when enabled, literal IPv4/IPv6 Host headers."""
 
@@ -85,24 +156,7 @@ class HostValidationMiddleware:
         return (parsed.hostname or "").lower().rstrip(".")
 
     def _allowed(self, host: str) -> bool:
-        if not host:
-            return False
-        if "*" in self.allowed_hosts:
-            return True
-        if self.allow_ip_hosts:
-            try:
-                ipaddress.ip_address(host)
-            except ValueError:
-                pass
-            else:
-                return True
-        for pattern in self.allowed_hosts:
-            if pattern.startswith("*."):
-                if host.endswith(pattern[1:]) and host != pattern[2:]:
-                    return True
-            elif host == pattern:
-                return True
-        return False
+        return host_matches_allowed(host, self.allowed_hosts, self.allow_ip_hosts)
 
     async def __call__(
         self,

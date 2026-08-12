@@ -23,6 +23,7 @@ from .security import (
     HostValidationMiddleware,
     RequestBodyLimitMiddleware,
     client_ip_allowed,
+    request_appears_secure,
 )
 
 logger = logging.getLogger(__name__)
@@ -163,11 +164,13 @@ def create_app(settings: Settings | None = None, config_path: str | Path | None 
         management_path = path == "/" or path.startswith(
             ("/gui", "/api/gui", "/api/v1", "/docs", "/redoc", "/openapi.json")
         )
-        if (
-            management_path
-            and resolved_settings.app.require_https
-            and request.url.scheme != "https"
-        ):
+        secure_request = request_appears_secure(
+            request.url.scheme,
+            request.headers.get("host", ""),
+            resolved_settings.app.allowed_hosts,
+            resolved_settings.app.allow_ip_hosts,
+        )
+        if management_path and resolved_settings.app.require_https and not secure_request:
             return JSONResponse(
                 status_code=426,
                 content={"detail": "HTTPS is required for the management interface"},
