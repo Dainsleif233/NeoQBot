@@ -14,6 +14,8 @@
 
 [快速开始](#快速开始) · [资源编排](#资源编排) · [部署](#docker-部署) · [安全](#安全边界) · [文档](#文档)
 
+<img src="assets/nqb.png" alt="NeoQBot 资源编排界面" width="880">
+
 </div>
 
 NeoQBot 是一个自托管的机器人与群组运营平台。它通过 OneBot 11 接入 QQ，通过可配置 CLI
