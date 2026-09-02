@@ -1002,29 +1002,6 @@
     return section;
   }
 
-  function appendMiniRecords(section, records, emptyText) {
-    var list = document.createElement("div");
-    list.className = "inspector-records";
-    (records || []).slice(0, 8).forEach(function (record) {
-      var item = document.createElement("article");
-      var title = document.createElement("strong");
-      var text = document.createElement("p");
-      var time = document.createElement("small");
-      title.textContent = record.title || record.sender_name || record.user_id || record.announcement_id || record.message_id || "记录";
-      text.textContent = record.text || record.content || (record.result_json && JSON.stringify(record.result_json)) || "";
-      time.textContent = record.sent_at || record.last_seen_at || record.created_at || record.received_at || "";
-      item.append(title, text, time);
-      list.appendChild(item);
-    });
-    if (!list.children.length) {
-      var empty = document.createElement("p");
-      empty.className = "inspector-muted";
-      empty.textContent = emptyText;
-      list.appendChild(empty);
-    }
-    section.appendChild(list);
-  }
-
   async function renderGroupActivity(node, host) {
     if (!node.ref.external_id) {
       host.textContent = "填写群号并保存编排后，即可读取这个群的聊天、公告和分析记录。";
@@ -1037,7 +1014,7 @@
       host.replaceChildren();
       var metrics = document.createElement("div");
       metrics.className = "inspector-metrics";
-      [["消息", data.counts.messages], ["公告", data.counts.announcements], ["分析", data.counts.moderation], ["申请", data.counts.joins]].forEach(function (item) {
+      [["入群申请", data.counts.joins], ["群聊消息", data.counts.messages], ["分析报告", data.counts.moderation], ["公告版本", data.counts.announcements]].forEach(function (item) {
         var metric = document.createElement("div");
         metric.innerHTML = "<span></span><strong></strong>";
         metric.querySelector("span").textContent = item[0];
@@ -1049,11 +1026,6 @@
       manager.className = "inspector-muted";
       manager.textContent = data.managers.length ? "管理 Bot：" + data.managers.map(function (bot) { return bot.name; }).join("、") : "尚未连接管理 Bot";
       host.appendChild(manager);
-      var messages = inspectorSection("最近消息");
-      appendMiniRecords(messages, data.records.messages, "还没有采集到群消息。");
-      var announcements = inspectorSection("群公告");
-      appendMiniRecords(announcements, data.records.announcements, "还没有归档群公告。");
-      host.append(messages, announcements);
     } catch (error) {
       host.textContent = error.message;
     }
@@ -1664,6 +1636,15 @@
     });
     content.appendChild(form);
 
+    if (node.kind === "qq_group") {
+      var overview = inspectorSection("群数据看板");
+      var overviewHost = document.createElement("div");
+      overviewHost.className = "group-activity";
+      overview.appendChild(overviewHost);
+      content.appendChild(overview);
+      renderGroupActivity(node, overviewHost);
+    }
+
     if (node.kind === "qq_bot" || node.kind === "feishu_bot") {
       var status = statusForNode(node);
       var statusSection = inspectorSection("运行状态");
@@ -1690,7 +1671,7 @@
       var detailHint = document.createElement("p");
       detailHint.className = "inspector-muted";
       detailHint.textContent = node.kind === "qq_group"
-        ? "群策略、说明、群消息、公告、申请与分析记录均在群节点的详细视图中查看。"
+        ? "复杂策略、周期与阈值在“详细编辑”中配置；群消息、公告、申请与分析记录可从右键“查看详细”打开。"
         : "资源说明与元数据在节点详细编辑中维护。";
       detailSection.append(detailHint, integrationButton("打开详细配置", function () { openNodeDetail(node.id); }));
       content.appendChild(detailSection);
@@ -2270,11 +2251,11 @@
 
   function resourceNodeDetailHtml(existing, kind) {
     var groupPolicy = kind === "qq_group" ? [
-      '<section class="node-detail-section"><div class="node-detail-section-title"><span>Join review</span><h3>本群入群审核策略</h3></div><p class="muted">这里的已填写字段只应用于本群；留空的字段继承“系统设置 → 判断策略”。功能开关仍按各 Bot→群连接独立控制。</p><div class="form-grid">',
+      '<section class="node-detail-section"><div class="node-detail-section-title"><span>Join review</span><h3>本群入群审核策略</h3></div><div class="node-detail-section-content"><p class="muted">这里的已填写字段只应用于本群；留空的字段继承“系统设置 → 判断策略”。功能开关仍按各 Bot→群连接独立控制。</p><div class="form-grid">',
       '<label class="span-2">本群审核政策<textarea data-node-field="join_policy" maxlength="4000" rows="5" placeholder="留空继承平台审核政策"></textarea></label>',
       '<label>本群必要关键词（每行一个）<textarea data-node-field="join_required_keywords" rows="4" placeholder="留空继承平台规则"></textarea></label>',
       '<label>本群禁止关键词（每行一个）<textarea data-node-field="join_forbidden_keywords" rows="4" placeholder="留空继承平台规则"></textarea></label>',
-      '</div></section>'
+      '</div></div></section>'
     ].join("") : "";
     return nodeDetailCommonHtml(existing) + [
       '<section class="node-detail-section"><div class="node-detail-section-title"><span>Resource</span><h3>资源信息</h3></div><div class="form-grid">',
@@ -2363,18 +2344,21 @@
         return isQQGroupAssignment(edge) && edge.target === node.id;
       }).map(clone);
       var assignmentsSection = document.createElement("section");
-      assignmentsSection.className = "node-detail-section";
-      assignmentsSection.innerHTML = '<div class="node-detail-section-title"><span>Group features</span><h3>各 Bot 在本群的功能设置</h3></div><p class="muted">“检测申请”仅留档；“执行审核”才会依据本群策略给出判断；自动同意和自动拒绝只会执行达到该连接最低置信度的建议。</p>';
+      assignmentsSection.className = "node-detail-section node-feature-settings";
+      assignmentsSection.innerHTML = '<div class="node-detail-section-heading"><div class="node-detail-section-title"><span>Group features</span><h3>各 Bot 在本群的功能设置</h3></div><p class="muted">“检测申请”仅留档；“执行审核”才会依据本群策略给出判断；自动同意和自动拒绝只会执行达到该连接最低置信度的建议。</p></div>';
+      var assignmentList = document.createElement("div");
+      assignmentList.className = "node-feature-list";
       if (!state.nodeDialog.assignmentDrafts.length) {
         var emptyAssignments = document.createElement("p");
         emptyAssignments.className = "muted";
         emptyAssignments.textContent = "尚未连接 QQ Bot。先在画布上连接 Bot 与本群，才能配置群功能。";
-        assignmentsSection.appendChild(emptyAssignments);
+        assignmentList.appendChild(emptyAssignments);
       } else {
         state.nodeDialog.assignmentDrafts.forEach(function (edge) {
-          assignmentsSection.appendChild(createAssignmentTaskEditor(edge, function () {}));
+          assignmentList.appendChild(createAssignmentTaskEditor(edge, function () {}));
         });
       }
+      assignmentsSection.appendChild(assignmentList);
       body.appendChild(assignmentsSection);
     }
     if (!state.orchestrationSensitiveEditsAllowed) {

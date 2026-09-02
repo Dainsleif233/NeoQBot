@@ -485,12 +485,6 @@ input, textarea, select { border-radius: 6px; padding: 9px 10px; background: var
 .inspector-metrics span, .inspector-metrics strong { display: block; }
 .inspector-metrics span { color: var(--subtle); font-size: 8px; }
 .inspector-metrics strong { margin-top: 3px; font-size: 15px; }
-.inspector-records { display: grid; gap: 6px; }
-.inspector-records article { padding: 8px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface-2); }
-.inspector-records strong, .inspector-records p, .inspector-records small { display: block; margin: 0; }
-.inspector-records strong { font-size: 10px; }
-.inspector-records p { display: -webkit-box; margin-top: 4px; overflow: hidden; color: var(--muted); font-size: 9px; line-height: 1.45; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
-.inspector-records small { margin-top: 5px; color: var(--subtle); font-size: 8px; }
 .group-activity { display: grid; gap: 12px; }
 .group-activity > .inspector-section { padding: 0; border: 0; }
 .connection-list { display: grid; gap: 5px; }
@@ -569,7 +563,7 @@ input, textarea, select { border-radius: 6px; padding: 9px 10px; background: var
 .form-dialog header .icon-button { width: 32px; height: 32px; font-size: 24px; }
 .form-dialog > form > .muted { line-height: 1.65; }
 .form-dialog footer { justify-content: flex-end; margin-top: 22px; }
-.node-detail-dialog { width: min(860px, calc(100vw - 32px)); max-height: min(880px, calc(100vh - 32px)); overflow: hidden; }
+.node-detail-dialog { width: min(1120px, calc(100vw - 48px)); max-height: min(880px, calc(100vh - 32px)); overflow: hidden; }
 .node-detail-dialog > form { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; max-height: min(880px, calc(100vh - 32px)); padding: 0; }
 .node-detail-dialog header { padding: 20px 22px 16px; }
 .node-detail-dialog > form > .muted { margin: 0; padding: 13px 22px; border-bottom: 1px solid var(--line); background: var(--surface-2); }
@@ -579,6 +573,14 @@ input, textarea, select { border-radius: 6px; padding: 9px 10px; background: var
 .node-detail-section-title span, .node-detail-section-title h3 { display: block; margin: 0; }
 .node-detail-section-title span { color: var(--subtle); font: 10px ui-monospace, Consolas, monospace; letter-spacing: .1em; text-transform: uppercase; }
 .node-detail-section-title h3 { margin-top: 5px; font-size: 14px; }
+.node-detail-section-content { min-width: 0; }
+.node-detail-section-content > .muted { margin: 0 0 14px; }
+.node-feature-settings { display: block; }
+.node-detail-section-heading { display: grid; grid-template-columns: 150px minmax(0, 1fr); align-items: start; gap: 20px; }
+.node-detail-section-heading > .muted { margin: 0; line-height: 1.65; }
+.node-feature-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 16px; margin-top: 18px; }
+.node-feature-list .assignment-task-editor { min-width: 0; }
+.node-feature-list .assignment-task-editor .task-detail { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .node-detail-section .form-grid { margin: 0; }
 .node-detail-section input[readonly] { color: var(--muted); background: var(--surface-2); cursor: not-allowed; }
 .node-detail-section label > small { display: block; margin-top: 5px; color: var(--subtle); font-size: 10px; line-height: 1.45; }
@@ -587,6 +589,8 @@ input, textarea, select { border-radius: 6px; padding: 9px 10px; background: var
 
 @media (max-width: 720px) {
   .node-detail-section { grid-template-columns: 1fr; gap: 12px; }
+  .node-detail-section-heading { grid-template-columns: 1fr; gap: 12px; }
+  .node-feature-list, .node-feature-list .assignment-task-editor .task-detail { grid-template-columns: 1fr; }
 }
 .profile-dialog { width: min(760px, calc(100vw - 32px)); max-height: min(820px, calc(100vh - 32px)); overflow: auto; }
 .profile-dialog-body, .value-dialog-body { padding: 22px; }
@@ -696,9 +700,6 @@ label { font-size: 15px; }
 .inspector-muted { font-size: 12.5px; }
 .inspector-metrics span { font-size: 10px; }
 .inspector-metrics strong { font-size: 18.75px; }
-.inspector-records strong { font-size: 12.5px; }
-.inspector-records p { font-size: 11.25px; }
-.inspector-records small { font-size: 10px; }
 .connection-list span { font-size: 12.5px; }
 .connection-list select { font-size: 11.25px; }
 .orchestration-statusbar, .context-menu-label { font-size: 10px; }
