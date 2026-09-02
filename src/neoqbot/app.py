@@ -161,8 +161,15 @@ def create_app(settings: Settings | None = None, config_path: str | Path | None 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
         path = request.url.path
-        management_path = path == "/" or path.startswith(
-            ("/gui", "/api/gui", "/api/v1", "/docs", "/redoc", "/openapi.json")
+        management_path = path in {
+            "/",
+            "/dashboard",
+            "/orchestration",
+            "/settings",
+            "/records",
+            "/user",
+        } or path.startswith(
+            ("/gui", "/assets", "/api/gui", "/api/v1", "/docs", "/redoc", "/openapi.json")
         )
         secure_request = request_appears_secure(
             request.url.scheme,
@@ -202,7 +209,9 @@ def create_app(settings: Settings | None = None, config_path: str | Path | None 
         )
         if request.url.scheme == "https":
             response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-        if path.startswith(("/api/", "/gui")):
+        if path.startswith(
+            ("/api/", "/gui", "/dashboard", "/orchestration", "/settings", "/records", "/user")
+        ):
             response.headers["Cache-Control"] = "no-store, max-age=0, must-revalidate"
             response.headers["Pragma"] = "no-cache"
             response.headers["Expires"] = "0"

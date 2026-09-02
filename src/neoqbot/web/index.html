@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="dark light">
   <title>NeoQBot 管理中心</title>
-  <link rel="icon" type="image/png" href="/gui/assets/img/neoqbot-logo.png">
-  <link rel="apple-touch-icon" href="/gui/assets/img/neoqbot-logo.png">
-  <link rel="stylesheet" href="/gui/assets/app.css?v=20260805-3">
+  <link rel="icon" type="image/png" href="/assets/img/neoqbot-logo.png">
+  <link rel="apple-touch-icon" href="/assets/img/neoqbot-logo.png">
+  <link rel="stylesheet" href="/assets/app.css?v=20260902-1">
 </head>
 <body>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
@@ -15,14 +15,14 @@
 
   <main id="login-view" class="auth-layout hidden">
     <section class="auth-brand">
-      <img class="brand-logo hero-logo" src="/gui/assets/img/neoqbot-logo.png" alt="NeoQBot">
+      <img class="brand-logo hero-logo" src="/assets/img/neoqbot-logo.png" alt="NeoQBot">
       <p class="eyebrow">Bots · Groups · Knowledge</p>
       <h1>让每个 Bot<br>只做它该做的事。</h1>
       <p class="lead">多账号接入、事务拆分、消息登记、分析判决与公告归档，都在一个克制的控制台里完成。</p>
     </section>
     <section class="auth-card">
       <div class="auth-card-head">
-        <img class="brand-logo card-logo" src="/gui/assets/img/neoqbot-logo.png" alt="NeoQBot">
+        <img class="brand-logo card-logo" src="/assets/img/neoqbot-logo.png" alt="NeoQBot">
         <div><p class="eyebrow">NeoQBot Console</p><h2>平台登录</h2></div>
       </div>
       <p class="muted">管理员与受邀子用户均使用独立账号登录；首次登录需要立即更换初始密码。</p>
@@ -37,14 +37,14 @@
 
   <main id="password-view" class="auth-layout hidden">
     <section class="auth-brand">
-      <img class="brand-logo hero-logo" src="/gui/assets/img/neoqbot-logo.png" alt="NeoQBot">
+      <img class="brand-logo hero-logo" src="/assets/img/neoqbot-logo.png" alt="NeoQBot">
       <p class="eyebrow">Security checkpoint</p>
       <h1>先更换随机初始密码。</h1>
       <p class="lead">这是保护 QQ 登录态、飞书文档与群聊审计数据的第一道边界。</p>
     </section>
     <section class="auth-card">
       <div class="auth-card-head">
-        <img class="brand-logo card-logo" src="/gui/assets/img/neoqbot-logo.png" alt="NeoQBot">
+        <img class="brand-logo card-logo" src="/assets/img/neoqbot-logo.png" alt="NeoQBot">
         <div><p class="eyebrow">首次登录</p><h2>设置新密码</h2></div>
       </div>
       <p class="muted">至少 14 个字符，建议使用密码管理器生成并保存。</p>
@@ -60,7 +60,7 @@
   <div id="app-view" class="app-shell hidden">
     <aside class="sidebar">
       <div class="sidebar-brand">
-        <img class="brand-logo sidebar-logo" src="/gui/assets/img/neoqbot-logo.png" alt="NeoQBot">
+        <img class="brand-logo sidebar-logo" src="/assets/img/neoqbot-logo.png" alt="NeoQBot">
         <div><strong>NeoQBot</strong><span>Control plane</span></div>
       </div>
       <nav id="main-nav">
@@ -285,18 +285,19 @@
                 <label>驱动<select id="cfg-llm-driver"><option value="rules">离线规则</option><option value="openai_compatible">OpenAI 兼容</option></select></label>
                 <label>模型名称<input id="cfg-llm-model"></label>
                 <label class="span-2">Base URL<input id="cfg-llm-url" placeholder="https://.../v1"></label>
-                <label class="span-2">API Key<input id="cfg-llm-key" type="password" placeholder="留空保持原值"></label>
+                <label class="span-2">API Key<input id="cfg-llm-key" type="password" autocomplete="new-password" placeholder="已保存的 Key 不会显示；填写新 Key 可覆盖"></label>
                 <label>超时（秒）<input id="cfg-llm-timeout" type="number" min="1"></label>
                 <label>重试次数<input id="cfg-llm-retries" type="number" min="0"></label>
                 <label class="switch-field span-2"><span><strong>发送 response_format</strong><small>端点不兼容时关闭</small></span><input id="cfg-llm-json" type="checkbox"></label>
+                <div class="span-2 button-row"><button id="cfg-llm-test" class="button secondary" type="button">测试模型连接</button><span id="cfg-llm-test-result" class="muted" aria-live="polite"></span></div>
               </div>
             </section>
             <section class="settings-section" data-settings-section="policy">
-              <div class="section-title"><p class="eyebrow">Step 02 · Shared policy</p><h2>共享判断策略</h2><p class="muted">这里维护所有 Bot 共用的平台判断文本与离线规则。</p></div>
+              <div class="section-title"><p class="eyebrow">Step 02 · Default policy</p><h2>默认判断策略</h2><p class="muted">这里是未设置群专属策略时的默认值；QQ群可在右键节点的“详细编辑”中覆盖入群审核策略。</p></div>
               <div class="form-grid">
-                <label class="span-2">入群必要关键词<textarea id="cfg-required-keywords" rows="2"></textarea></label>
-                <label class="span-2">入群禁止关键词<textarea id="cfg-forbidden-keywords" rows="2"></textarea></label>
-                <label class="span-2">入群审核政策<textarea id="cfg-join-policy" rows="5"></textarea></label>
+                <label class="span-2">默认入群必要关键词<textarea id="cfg-required-keywords" rows="2"></textarea></label>
+                <label class="span-2">默认入群禁止关键词<textarea id="cfg-forbidden-keywords" rows="2"></textarea></label>
+                <label class="span-2">默认入群审核政策<textarea id="cfg-join-policy" rows="5"></textarea></label>
                 <label class="span-2">群聊风控政策<textarea id="cfg-mod-policy" rows="6"></textarea></label>
                 <label class="span-2">离线关键词规则（JSON）<textarea id="cfg-rule-keywords" class="code-input" rows="8"></textarea></label>
               </div>
@@ -436,6 +437,6 @@
     <footer><span><kbd>↑</kbd><kbd>↓</kbd> 选择</span><span><kbd>Enter</kbd> 执行</span><span><kbd>Esc</kbd> 关闭</span></footer>
   </dialog>
 
-  <script src="/gui/assets/app.js?v=20260806-3" defer></script>
+  <script src="/assets/app.js?v=20260902-1" defer></script>
 </body>
 </html>

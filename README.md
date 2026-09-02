@@ -109,7 +109,7 @@ uv run neoqbot --config config.yaml init-db
 uv run neoqbot --config config.yaml serve
 ```
 
-打开 <http://127.0.0.1:8080/gui/>。初始账号为 `admin`，密码从
+打开 <http://127.0.0.1:8080/dashboard>。初始账号为 `admin`，密码从
 `data/secrets/gui-bootstrap-password` 读取；首次登录必须修改密码。请勿把该文件提交到仓库。
 管理员可在“用户管理”中创建子用户并设置初始密码。子用户首次登录后同样必须修改密码，可以共同
 管理 Bot、群、知识库和平台设置，但不能创建、重置或删除其他用户。

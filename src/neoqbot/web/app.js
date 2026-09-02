@@ -40,6 +40,14 @@
     commandIndex: 0
   };
 
+  var viewPaths = {
+    dashboard: "/dashboard",
+    integrations: "/orchestration",
+    settings: "/settings",
+    records: "/records",
+    users: "/user"
+  };
+
   function $(id) { return document.getElementById(id); }
   function clone(value) { return value === undefined ? undefined : JSON.parse(JSON.stringify(value)); }
   function listValue(value) { return (value || []).join("\n"); }
@@ -205,11 +213,22 @@
     window.setTimeout(function () { $("current-password").focus(); }, 50);
   }
 
+  function viewFromLocation() {
+    var pathname = window.location.pathname.replace(/\/+$/, "") || "/dashboard";
+    return Object.keys(viewPaths).find(function (name) { return viewPaths[name] === pathname; }) || "dashboard";
+  }
+
+  function updateViewLocation(name, replace) {
+    var path = viewPaths[name];
+    if (!path || window.location.pathname === path) return;
+    window.history[replace ? "replaceState" : "pushState"]({ view: name }, "", path);
+  }
+
   async function showApp() {
     hideAllRoots();
     $("app-view").classList.remove("hidden");
     renderCurrentUser();
-    await loadDashboard();
+    await switchView(viewFromLocation(), { skipLocation: true });
   }
 
   async function initialize() {
@@ -386,9 +405,11 @@
     users: ["Access control", "用户管理"]
   };
 
-  async function switchView(name) {
+  async function switchView(name, options) {
+    options = options || {};
     if (name === "users" && state.role !== "admin") {
       showToast("只有管理员可以管理平台用户", true);
+      if (!options.skipLocation) updateViewLocation(state.activeView, true);
       return;
     }
     if (state.activeView === "integrations" && name !== "integrations" && state.orchestrationDirty) {
@@ -397,7 +418,10 @@
         message: "编排还有未保存的更改，离开后将丢失。",
         confirmText: "放弃更改并离开",
         danger: true
-      })) return;
+      })) {
+        if (options.skipLocation) updateViewLocation(state.activeView, true);
+        return;
+      }
       state.orchestrationDirty = false;
     }
     if (state.activeView === "settings" && name !== "settings" && state.settingsDirty) {
@@ -406,10 +430,14 @@
         message: "系统设置还有未保存的更改，离开后将丢失。",
         confirmText: "放弃更改并离开",
         danger: true
-      })) return;
+      })) {
+        if (options.skipLocation) updateViewLocation(state.activeView, true);
+        return;
+      }
       state.settingsDirty = false;
     }
     state.activeView = name;
+    if (!options.skipLocation) updateViewLocation(name);
     document.querySelectorAll(".view").forEach(function (node) { node.classList.remove("active"); });
     document.querySelectorAll(".nav-item").forEach(function (node) { node.classList.toggle("active", node.dataset.view === name); });
     $("view-" + name).classList.add("active");
@@ -429,6 +457,9 @@
 
   document.querySelectorAll(".nav-item").forEach(function (button) {
     button.addEventListener("click", function () { switchView(button.dataset.view); });
+  });
+  window.addEventListener("popstate", function () {
+    switchView(viewFromLocation(), { skipLocation: true });
   });
   $("menu-button").addEventListener("click", function () { document.querySelector(".sidebar").classList.toggle("open"); });
   $("refresh-button").addEventListener("click", function () { switchView(state.activeView); });
@@ -1416,7 +1447,7 @@
     clearCurrentGroupRecords().catch(function (error) { showToast(error.message, true); });
   });
 
-  function createAssignmentTaskEditor(edge) {
+  function createAssignmentTaskEditor(edge, onCommit) {
     edge.tasks = edge.tasks || defaultQQTasks();
     var tasks = edge.tasks;
     var editor = document.createElement("article");
@@ -1503,11 +1534,62 @@
           feishu_bot_id: field(editor, "announcement.feishu_bot_id").value.trim()
         }
       };
-      markOrchestrationDirty();
+      if (onCommit) onCommit(edge);
+      else markOrchestrationDirty();
     }
     editor.querySelectorAll("input").forEach(function (input) {
       input.addEventListener(input.type === "checkbox" ? "change" : "input", commit);
     });
+    return editor;
+  }
+
+  function createAssignmentSwitches(edge) {
+    edge.tasks = edge.tasks || defaultQQTasks();
+    var tasks = edge.tasks;
+    var source = graphNode(edge.source);
+    var target = graphNode(edge.target);
+    var editor = document.createElement("article");
+    editor.className = "assignment-task-editor assignment-switches";
+    editor.innerHTML = [
+      '<header><div><strong></strong><small>详细策略、阈值和周期请右键对应群节点编辑</small></div><span class="pill"></span></header>',
+      '<div class="task-detail">',
+      '<label class="switch-field"><span><strong>检测申请</strong><small>接收申请并留档，不做模型判断</small></span><input data-field="join.detect_requests" type="checkbox"></label>',
+      '<label class="switch-field"><span><strong>执行审核</strong><small>按本群策略调用模型并通知管理员</small></span><input data-field="join.execute_management" type="checkbox"></label>',
+      '<label class="switch-field"><span><strong>自动同意</strong><small>高置信度同意建议直接执行</small></span><input data-field="join.auto_approve" type="checkbox"></label>',
+      '<label class="switch-field"><span><strong>自动拒绝</strong><small>高置信度拒绝建议直接执行</small></span><input data-field="join.auto_reject" type="checkbox"></label>',
+      '<label class="switch-field"><span><strong>记录消息</strong></span><input data-field="message.record" type="checkbox"></label>',
+      '<label class="switch-field"><span><strong>定时分析</strong></span><input data-field="message.scheduled_analysis" type="checkbox"></label>',
+      '<label class="switch-field"><span><strong>同步公告</strong></span><input data-field="announcement.enabled" type="checkbox"></label>',
+      '</div>'
+    ].join("");
+    editor.querySelector("header strong").textContent = (source ? source.name : edge.source) + " → " + (target ? target.name : edge.target);
+    editor.querySelector("header .pill").textContent = relationLabel(edge.relation);
+    setField(editor, "join.detect_requests", tasks.join_management.detect_requests);
+    setField(editor, "join.execute_management", tasks.join_management.execute_management);
+    setField(editor, "join.auto_approve", tasks.join_management.auto_approve);
+    setField(editor, "join.auto_reject", tasks.join_management.auto_reject);
+    setField(editor, "message.record", tasks.message_detection.record);
+    setField(editor, "message.scheduled_analysis", tasks.message_detection.scheduled_analysis);
+    setField(editor, "announcement.enabled", tasks.announcement_sync.enabled);
+    function commit() {
+      var detectRequests = field(editor, "join.detect_requests").checked;
+      var executeManagement = field(editor, "join.execute_management").checked;
+      if (executeManagement) {
+        detectRequests = true;
+        field(editor, "join.detect_requests").checked = true;
+      }
+      tasks.join_management.enabled = detectRequests || executeManagement;
+      tasks.join_management.detect_requests = detectRequests;
+      tasks.join_management.execute_management = executeManagement;
+      tasks.join_management.auto_approve = field(editor, "join.auto_approve").checked;
+      tasks.join_management.auto_reject = field(editor, "join.auto_reject").checked;
+      tasks.message_detection.record = field(editor, "message.record").checked;
+      tasks.message_detection.scheduled_analysis = field(editor, "message.scheduled_analysis").checked;
+      tasks.message_detection.enabled = tasks.message_detection.record || tasks.message_detection.scheduled_analysis;
+      tasks.announcement_sync.enabled = field(editor, "announcement.enabled").checked;
+      markOrchestrationDirty();
+    }
+    editor.querySelectorAll("input").forEach(function (input) { input.addEventListener("change", commit); });
     return editor;
   }
 
@@ -1516,12 +1598,12 @@
       return isQQGroupAssignment(edge) && (edge.source === node.id || edge.target === node.id);
     });
     if (!assignments.length) return;
-    var section = inspectorSection("群内事务分工");
+    var section = inspectorSection("功能开关");
     var hint = document.createElement("p");
     hint.className = "inspector-muted";
-    hint.textContent = "事务属于 Bot 与群的连接；同一 Bot 在不同群可使用不同开关、周期和阈值。";
+    hint.textContent = "开关属于 Bot→群连接；本群的审核判断策略和历史记录在右键群节点的详细编辑中维护。";
     section.appendChild(hint);
-    assignments.forEach(function (edge) { section.appendChild(createAssignmentTaskEditor(edge)); });
+    assignments.forEach(function (edge) { section.appendChild(createAssignmentSwitches(edge)); });
     content.appendChild(section);
   }
 
@@ -1604,31 +1686,14 @@
       statusSection.append(output, actions);
       content.appendChild(statusSection);
     } else {
-      var descriptionSection = inspectorSection("资源说明");
-      var description = document.createElement("textarea");
-      description.rows = 3;
-      description.placeholder = "记录用途、负责人或数据边界";
-      description.value = node.ref.description || "";
-      description.addEventListener("input", function () { node.ref.description = description.value; markOrchestrationDirty(); });
-      descriptionSection.appendChild(description);
-      content.appendChild(descriptionSection);
-      if (node.kind === "knowledge_base") {
-        var metadataSection = inspectorSection("知识库来源");
-        metadataSection.innerHTML += '<label>Provider<input data-meta="provider" placeholder="Feishu / Notion / Local"></label><label>访问地址<input data-meta="url" placeholder="https://..."></label>';
-        node.ref.metadata = node.ref.metadata || {};
-        metadataSection.querySelectorAll("input").forEach(function (input) {
-          input.value = node.ref.metadata[input.dataset.meta] || "";
-          input.addEventListener("input", function () { node.ref.metadata[input.dataset.meta] = input.value; markOrchestrationDirty(); });
-        });
-        content.appendChild(metadataSection);
-      } else {
-        var activity = inspectorSection("群数据");
-        var activityHost = document.createElement("div");
-        activityHost.className = "group-activity";
-        activity.appendChild(activityHost);
-        content.appendChild(activity);
-        renderGroupActivity(node, activityHost);
-      }
+      var detailSection = inspectorSection("详细配置");
+      var detailHint = document.createElement("p");
+      detailHint.className = "inspector-muted";
+      detailHint.textContent = node.kind === "qq_group"
+        ? "群策略、说明、群消息、公告、申请与分析记录均在群节点的详细视图中查看。"
+        : "资源说明与元数据在节点详细编辑中维护。";
+      detailSection.append(detailHint, integrationButton("打开详细配置", function () { openNodeDetail(node.id); }));
+      content.appendChild(detailSection);
     }
 
     appendAssignmentEditors(node, content);
@@ -2203,13 +2268,20 @@
     ].join("");
   }
 
-  function resourceNodeDetailHtml(existing) {
+  function resourceNodeDetailHtml(existing, kind) {
+    var groupPolicy = kind === "qq_group" ? [
+      '<section class="node-detail-section"><div class="node-detail-section-title"><span>Join review</span><h3>本群入群审核策略</h3></div><p class="muted">这里的已填写字段只应用于本群；留空的字段继承“系统设置 → 判断策略”。功能开关仍按各 Bot→群连接独立控制。</p><div class="form-grid">',
+      '<label class="span-2">本群审核政策<textarea data-node-field="join_policy" maxlength="4000" rows="5" placeholder="留空继承平台审核政策"></textarea></label>',
+      '<label>本群必要关键词（每行一个）<textarea data-node-field="join_required_keywords" rows="4" placeholder="留空继承平台规则"></textarea></label>',
+      '<label>本群禁止关键词（每行一个）<textarea data-node-field="join_forbidden_keywords" rows="4" placeholder="留空继承平台规则"></textarea></label>',
+      '</div></section>'
+    ].join("") : "";
     return nodeDetailCommonHtml(existing) + [
       '<section class="node-detail-section"><div class="node-detail-section-title"><span>Resource</span><h3>资源信息</h3></div><div class="form-grid">',
       '<label class="span-2">平台标识<input data-node-field="external_id" maxlength="160" placeholder="群号、chat_id 或知识库 ID"></label>',
       '<label class="span-2">说明<textarea data-node-field="description" maxlength="1000" rows="4" placeholder="用途、负责人和数据边界"></textarea></label>',
       '<label class="span-2">元数据（JSON）<textarea data-node-field="metadata" class="code-input" rows="6"></textarea></label>',
-      '</div></section>'
+      '</div></section>', groupPolicy
     ].join("");
   }
 
@@ -2233,7 +2305,7 @@
       ? "当前只编辑“" + draft.name + "”。Bot 与群、群与群之间的配置彼此独立。"
       : "保存后才会创建节点；请先确认内部 ID，它在创建后保持不变。";
     var body = $("node-detail-body");
-    body.innerHTML = nodeKind === "qq_bot" ? qqNodeDetailHtml(existing) : nodeKind === "feishu_bot" ? feishuNodeDetailHtml(existing) : resourceNodeDetailHtml(existing);
+    body.innerHTML = nodeKind === "qq_bot" ? qqNodeDetailHtml(existing) : nodeKind === "feishu_bot" ? feishuNodeDetailHtml(existing) : resourceNodeDetailHtml(existing, nodeKind);
     setNodeDetailValue("id", draft.id);
     setNodeDetailValue("name", draft.name);
     setNodeDetailValue("enabled", draft.enabled);
@@ -2279,6 +2351,31 @@
       setNodeDetailValue("external_id", draft.external_id || "");
       setNodeDetailValue("description", draft.description || "");
       setNodeDetailValue("metadata", pretty(draft.metadata));
+      if (nodeKind === "qq_group") {
+        var joinPolicy = draft.join_approval || {};
+        setNodeDetailValue("join_policy", joinPolicy.policy || "");
+        setNodeDetailValue("join_required_keywords", joinPolicy.required_keywords === undefined || joinPolicy.required_keywords === null ? "" : listValue(joinPolicy.required_keywords));
+        setNodeDetailValue("join_forbidden_keywords", joinPolicy.forbidden_keywords === undefined || joinPolicy.forbidden_keywords === null ? "" : listValue(joinPolicy.forbidden_keywords));
+      }
+    }
+    if (nodeKind === "qq_group" && existing) {
+      state.nodeDialog.assignmentDrafts = state.orchestrationEdges.filter(function (edge) {
+        return isQQGroupAssignment(edge) && edge.target === node.id;
+      }).map(clone);
+      var assignmentsSection = document.createElement("section");
+      assignmentsSection.className = "node-detail-section";
+      assignmentsSection.innerHTML = '<div class="node-detail-section-title"><span>Group features</span><h3>各 Bot 在本群的功能设置</h3></div><p class="muted">“检测申请”仅留档；“执行审核”才会依据本群策略给出判断；自动同意和自动拒绝只会执行达到该连接最低置信度的建议。</p>';
+      if (!state.nodeDialog.assignmentDrafts.length) {
+        var emptyAssignments = document.createElement("p");
+        emptyAssignments.className = "muted";
+        emptyAssignments.textContent = "尚未连接 QQ Bot。先在画布上连接 Bot 与本群，才能配置群功能。";
+        assignmentsSection.appendChild(emptyAssignments);
+      } else {
+        state.nodeDialog.assignmentDrafts.forEach(function (edge) {
+          assignmentsSection.appendChild(createAssignmentTaskEditor(edge, function () {}));
+        });
+      }
+      body.appendChild(assignmentsSection);
     }
     if (!state.orchestrationSensitiveEditsAllowed) {
       body.querySelectorAll("[data-sensitive]").forEach(function (control) {
@@ -2338,6 +2435,16 @@
       draft.external_id = nodeDetailControl("external_id").value.trim();
       draft.description = nodeDetailControl("description").value.trim();
       draft.metadata = parseJsonText(nodeDetailControl("metadata").value, "资源元数据");
+      if (dialogState.kind === "qq_group") {
+        var policy = nodeDetailControl("join_policy").value.trim();
+        var requiredText = nodeDetailControl("join_required_keywords").value.trim();
+        var forbiddenText = nodeDetailControl("join_forbidden_keywords").value.trim();
+        draft.join_approval = policy || requiredText || forbiddenText ? {
+          policy: policy || null,
+          required_keywords: requiredText ? splitList(requiredText) : null,
+          forbidden_keywords: forbiddenText ? splitList(forbiddenText) : null
+        } : null;
+      }
     }
     return draft;
   }
@@ -2360,6 +2467,12 @@
       var node = graphNode(dialogState.originalNodeId);
       if (!node) throw new Error("节点已不存在，请刷新编排");
       Object.assign(node.ref, draft);
+      (dialogState.assignmentDrafts || []).forEach(function (assignmentDraft) {
+        var edge = state.config.orchestration.edges.find(function (item) {
+          return item.id === assignmentDraft.id;
+        });
+        if (edge) Object.assign(edge, clone(assignmentDraft));
+      });
     }
     dialogState.mode = "edit";
     dialogState.originalNodeId = nodeId;
@@ -2409,6 +2522,7 @@
 
   function lockSensitiveControl(control) {
     if (!control || !sensitiveSettingsLocked()) return;
+    if (control.id === "cfg-llm-url" || control.id === "cfg-llm-key") return;
     control.disabled = true;
     control.title = "该部署安全字段已锁定，请在服务器配置文件中修改";
   }
@@ -2437,6 +2551,10 @@
     $("cfg-llm-model").value = c.llm.model;
     $("cfg-llm-url").value = c.llm.base_url;
     $("cfg-llm-key").value = "";
+    $("cfg-llm-key").placeholder = c.llm.api_key === "***"
+      ? "已保存的 Key 不会显示；填写新 Key 可覆盖"
+      : "填写 API Key（保存后不会显示）";
+    $("cfg-llm-test-result").textContent = "";
     $("cfg-llm-timeout").value = c.llm.timeout_seconds;
     $("cfg-llm-retries").value = c.llm.max_retries;
     $("cfg-llm-json").checked = c.llm.json_response_format;
@@ -2456,6 +2574,32 @@
     ].forEach(function (id) { lockSensitiveControl($(id)); });
     activateSettingsStep(settingsSteps.indexOf(state.settingsStep) >= 0 ? state.settingsStep : "llm");
   }
+
+  $("cfg-llm-test").addEventListener("click", async function () {
+    var button = this;
+    button.disabled = true;
+    $("cfg-llm-test-result").textContent = "正在请求模型…";
+    try {
+      var result = await api("/api/gui/settings/llm/test", {
+        method: "POST",
+        body: {
+          driver: $("cfg-llm-driver").value,
+          base_url: $("cfg-llm-url").value.trim(),
+          api_key: $("cfg-llm-key").value,
+          model: $("cfg-llm-model").value.trim(),
+          timeout_seconds: numberValue($("cfg-llm-timeout").value, 30),
+          json_response_format: $("cfg-llm-json").checked
+        }
+      });
+      $("cfg-llm-test-result").textContent = result.message || "模型连接正常";
+      showToast("模型连接测试通过");
+    } catch (error) {
+      $("cfg-llm-test-result").textContent = "测试失败：" + error.message;
+      showToast(error.message, true);
+    } finally {
+      button.disabled = false;
+    }
+  });
 
   function updateSettingsReview() {
     if (!state.config) return;

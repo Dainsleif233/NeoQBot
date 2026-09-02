@@ -54,7 +54,9 @@ class JoinApprovalService:
             return "detected"
 
         try:
-            decision = await self.engine.review_join(request)
+            decision = await self.engine.review_join(
+                request, self.settings.join_approval_for_group(assignment.resource_id)
+            )
         except Exception as exc:
             logger.exception("Join review failed")
             decision = JoinDecision(

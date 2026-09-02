@@ -112,7 +112,7 @@ uv run neoqbot --config config.yaml init-db
 uv run neoqbot --config config.yaml serve
 ```
 
-<http://127.0.0.1:8080/gui/> を開きます。初期ユーザー名は `admin` です。ランダムな初期
+<http://127.0.0.1:8080/dashboard> を開きます。初期ユーザー名は `admin` です。ランダムな初期
 パスワードは `data/secrets/gui-bootstrap-password` から読み取ります。初回ログイン時に
 パスワード変更が必須です。このファイルをリポジトリへコミットしないでください。
 管理者は「ユーザー管理」から子ユーザーを作成し、初期パスワードを設定できます。子ユーザーも

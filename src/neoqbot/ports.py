@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from .config import JoinApprovalConfig
 from .models import (
     Announcement,
     GroupMessage,
@@ -13,7 +14,9 @@ from .models import (
 
 
 class DecisionEngine(Protocol):
-    async def review_join(self, request: JoinRequest) -> JoinDecision: ...
+    async def review_join(
+        self, request: JoinRequest, policy: JoinApprovalConfig | None = None
+    ) -> JoinDecision: ...
 
     async def moderate_messages(self, messages: list[GroupMessage]) -> ModerationResult: ...
 

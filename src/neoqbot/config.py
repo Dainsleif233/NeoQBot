@@ -182,6 +182,34 @@ class QQTaskConfig(BaseModel):
     announcement_sync: QQAnnouncementTaskConfig = Field(default_factory=QQAnnouncementTaskConfig)
 
 
+class QQGroupJoinPolicyConfig(BaseModel):
+    """Optional join-review policy that overrides only one QQ group.
+
+    ``None`` means inherit the platform setting.  An explicitly empty keyword
+    list is meaningful: it clears the platform keyword rule for this group.
+    """
+
+    policy: str | None = Field(default=None, max_length=4000)
+    required_keywords: list[str] | None = None
+    forbidden_keywords: list[str] | None = None
+
+    @field_validator("policy", mode="before")
+    @classmethod
+    def strip_policy(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        return value.strip() or None
+
+    @field_validator("required_keywords", "forbidden_keywords", mode="before")
+    @classmethod
+    def clean_keywords(cls, value: object) -> object:
+        if value is None:
+            return None
+        if not isinstance(value, list):
+            raise ValueError("群入群审核关键词必须是列表")
+        return list(dict.fromkeys(str(item).strip() for item in value if str(item).strip()))
+
+
 class QQBotConfig(QQConnectionConfig):
     id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
     name: str = Field(default="QQ Bot", min_length=1, max_length=80)
@@ -319,6 +347,9 @@ class OrchestrationResourceConfig(BaseModel):
     description: str = Field(default="", max_length=1000)
     enabled: bool = True
     metadata: dict[str, str] = Field(default_factory=dict)
+    join_approval: QQGroupJoinPolicyConfig | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @field_validator("name", "external_id", "description", mode="before")
     @classmethod
@@ -701,6 +732,23 @@ class Settings(BaseSettings):
             None,
         )
 
+    def join_approval_for_group(self, resource_id: str) -> JoinApprovalConfig:
+        """Resolve the policy for one QQ-group resource without mutating defaults."""
+        resource = next(
+            (item for item in self.orchestration.resources if item.id == resource_id), None
+        )
+        override = resource.join_approval if resource is not None else None
+        if override is None:
+            return self.join_approval
+        changes: dict[str, object] = {}
+        if override.policy is not None:
+            changes["policy"] = override.policy
+        if override.required_keywords is not None:
+            changes["required_keywords"] = override.required_keywords
+        if override.forbidden_keywords is not None:
+            changes["forbidden_keywords"] = override.forbidden_keywords
+        return self.join_approval.model_copy(update=changes, deep=True)
+
     def bot_group_ids(self, bot_id: str) -> list[str]:
         return sorted({assignment.group_id for assignment in self.qq_group_assignments(bot_id)})
 
@@ -869,8 +917,6 @@ class Settings(BaseSettings):
             warnings.append("app.forwarded_allow_ips='*' 会信任任意代理头，不建议使用")
         if self.app.expose_api_docs:
             warnings.append("OpenAPI 文档已公开，仅应在受限开发环境使用")
-        if not self.app.management_allowed_networks:
-            warnings.append("管理端未配置 IP/CIDR 白名单，请依赖本机绑定、VPN 或反向代理访问控制")
         connected_resources = {
             endpoint
             for edge in self.orchestration.edges

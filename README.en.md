@@ -117,7 +117,7 @@ uv run neoqbot --config config.yaml init-db
 uv run neoqbot --config config.yaml serve
 ```
 
-Open <http://127.0.0.1:8080/gui/>. The initial username is `admin`; read the random password from
+Open <http://127.0.0.1:8080/dashboard>. The initial username is `admin`; read the random password from
 `data/secrets/gui-bootstrap-password`. A password change is required on first login. Never commit
 this file.
 Administrators can create child users and assign initial passwords from **User management**. Child

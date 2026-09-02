@@ -12,15 +12,18 @@ from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 
+import httpx
 from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import __version__
+from .adapters.llm import OpenAICompatibleDecisionEngine
 from .auth import GuiSession
 from .config import (
     FeishuBotConfig,
+    LLMConfig,
     OrchestrationResourceConfig,
     QQBotConfig,
     QQGroupAssignment,
@@ -74,6 +77,15 @@ class SettingsPayload(BaseModel):
     config: dict[str, Any]
     revision: str = Field(default="", max_length=64)
     identity_changes: BotIdentityChanges = Field(default_factory=BotIdentityChanges)
+
+
+class LLMConnectionTestPayload(BaseModel):
+    driver: Literal["openai_compatible", "rules"] = "rules"
+    base_url: str = Field(default="", min_length=1, max_length=2000)
+    api_key: str = Field(default="", max_length=4096)
+    model: str = Field(default="", min_length=1, max_length=256)
+    timeout_seconds: float = Field(default=30, ge=1, le=300)
+    json_response_format: bool = True
 
 
 PLATFORM_SETTINGS_SECTIONS = {
@@ -215,8 +227,6 @@ def _preserve_masked_secrets(candidate: dict[str, Any], current: Settings) -> di
         llm = candidate.setdefault("llm", {})
         if not isinstance(llm, dict):
             raise ValueError("llm 配置必须是对象")
-        llm["base_url"] = current.llm.base_url
-        llm["api_key"] = current.llm.api_key
 
     qq_section = candidate.setdefault("qq", {})
     if isinstance(qq_section, dict) and isinstance(qq_section.get("bots"), list):
@@ -347,7 +357,10 @@ def register_gui(
 ) -> None:
     web_root = Path(__file__).with_name("web")
     configuration_path = Path(config_path)
-    app.mount("/gui/assets", StaticFiles(directory=web_root), name="gui-assets")
+    app.mount("/assets", StaticFiles(directory=web_root), name="gui-assets")
+    # Existing bookmarks and cached pages keep working while the GUI moves to
+    # page-specific URLs.
+    app.mount("/gui/assets", StaticFiles(directory=web_root), name="legacy-gui-assets")
     login_failures = FailureLimiter()
 
     def current_session(
@@ -396,15 +409,60 @@ def register_gui(
 
     @app.get("/", include_in_schema=False)
     async def root() -> RedirectResponse:
-        return RedirectResponse("/gui/")
+        return RedirectResponse("/dashboard")
 
     @app.get("/gui", include_in_schema=False)
     async def gui_redirect() -> RedirectResponse:
-        return RedirectResponse("/gui/")
+        return RedirectResponse("/dashboard")
 
     @app.get("/gui/", include_in_schema=False)
+    async def gui_index_redirect() -> RedirectResponse:
+        return RedirectResponse("/dashboard")
+
+    @app.get("/dashboard", include_in_schema=False)
+    @app.get("/orchestration", include_in_schema=False)
+    @app.get("/settings", include_in_schema=False)
+    @app.get("/records", include_in_schema=False)
+    @app.get("/user", include_in_schema=False)
     async def gui_index() -> FileResponse:
         return FileResponse(web_root / "index.html")
+
+    @app.post("/api/gui/settings/llm/test")
+    async def gui_test_llm_connection(
+        payload: LLMConnectionTestPayload,
+        _: GuiSession = Depends(ready_admin_csrf),
+    ) -> dict[str, str | bool]:
+        if payload.driver != "openai_compatible":
+            raise HTTPException(status_code=422, detail="请选择 OpenAI 兼容驱动后再测试连接")
+        current = get_settings()
+        try:
+            config = LLMConfig(
+                driver="openai_compatible",
+                base_url=payload.base_url.strip(),
+                api_key=payload.api_key or current.llm.api_key,
+                model=payload.model.strip(),
+                timeout_seconds=payload.timeout_seconds,
+                max_retries=0,
+                json_response_format=payload.json_response_format,
+            )
+            engine = OpenAICompatibleDecisionEngine(
+                config, current.join_approval, current.moderation
+            )
+            try:
+                await engine.test_connection()
+            finally:
+                await engine.close()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"模型连接失败：{type(exc).__name__}",
+            ) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"模型测试失败：{type(exc).__name__}",
+            ) from exc
+        return {"ok": True, "message": "模型已正常响应", "model": config.model}
 
     @app.post("/api/gui/auth/login")
     async def gui_login(

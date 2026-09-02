@@ -105,6 +105,28 @@ def assignment_settings() -> Settings:
 
 
 class SettingsAssignmentTests(unittest.TestCase):
+    def test_qq_group_policy_overrides_only_its_configured_fields(self) -> None:
+        config = assignment_settings().model_dump(mode="json")
+        config["join_approval"] = {
+            "policy": "平台默认策略",
+            "required_keywords": ["默认信息"],
+            "forbidden_keywords": ["平台禁止项"],
+        }
+        config["orchestration"]["resources"][1]["join_approval"] = {
+            "policy": "审核群专属策略",
+            "required_keywords": [],
+        }
+        settings = Settings.model_validate(config)
+
+        inherited = settings.join_approval_for_group("group-record")
+        overridden = settings.join_approval_for_group("group-analyze")
+
+        self.assertEqual(inherited.policy, "平台默认策略")
+        self.assertEqual(inherited.required_keywords, ["默认信息"])
+        self.assertEqual(overridden.policy, "审核群专属策略")
+        self.assertEqual(overridden.required_keywords, [])
+        self.assertEqual(overridden.forbidden_keywords, ["平台禁止项"])
+
     def test_legacy_first_bot_adopts_the_bundled_napcat_identity(self) -> None:
         settings = Settings.model_validate(
             {
@@ -320,6 +342,37 @@ class SettingsAssignmentTests(unittest.TestCase):
 
 
 class ConfigurationPathTests(unittest.TestCase):
+    def test_gui_uses_page_specific_routes_and_keeps_the_legacy_gui_redirect(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            settings = Settings.model_validate(
+                {
+                    "app": {
+                        "database_path": str(Path(directory) / "gui-routes.db"),
+                        "message_archive_path": str(Path(directory) / "messages"),
+                    },
+                    "gui": {
+                        "enabled": True,
+                        "bootstrap_password": "temporary-test-password",
+                    },
+                    "qq": {"bots": []},
+                    "feishu": {"bots": []},
+                }
+            )
+            app = create_app(settings)
+            with TestClient(app) as client:
+                root = client.get("/", follow_redirects=False)
+                legacy = client.get("/gui/", follow_redirects=False)
+                pages = [
+                    client.get(path)
+                    for path in ("/dashboard", "/orchestration", "/settings", "/records", "/user")
+                ]
+                asset = client.get("/assets/app.js")
+
+        self.assertEqual(root.headers["location"], "/dashboard")
+        self.assertEqual(legacy.headers["location"], "/dashboard")
+        self.assertTrue(all(response.status_code == 200 for response in pages))
+        self.assertEqual(asset.status_code, 200)
+
     def test_gui_receives_the_cli_selected_configuration_path(self) -> None:
         settings = Settings.model_validate({"gui": {"enabled": True}})
         selected = Path("data/custom-config.yaml")
@@ -401,6 +454,87 @@ class ConfigurationPathTests(unittest.TestCase):
 
 
 class GuiDomainIsolationTests(unittest.TestCase):
+    def test_llm_connection_test_uses_unsaved_form_values_without_persisting_a_key(self) -> None:
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as directory:
+            config = assignment_settings().model_dump(mode="json")
+            config["app"].update(
+                {
+                    "database_path": str(Path(directory) / "llm-test.db"),
+                    "message_archive_path": str(Path(directory) / "messages"),
+                }
+            )
+            config["gui"].update({"enabled": True, "bootstrap_password": "temporary-test-password"})
+            config["llm"].update(
+                {
+                    "driver": "openai_compatible",
+                    "base_url": "https://saved.example/v1",
+                    "api_key": "saved-key",
+                    "model": "saved-model",
+                }
+            )
+            settings = Settings.model_validate(config)
+            app = create_app(settings)
+            app.state.container.auth.session = lambda _: GuiSession(
+                username="admin",
+                csrf_token="test-csrf",
+                must_change_password=False,
+                role="admin",
+                token_hash="test-token-hash",
+            )
+
+            with (
+                patch(
+                    "neoqbot.gui.OpenAICompatibleDecisionEngine.test_connection",
+                    new=AsyncMock(),
+                ) as test_connection,
+                TestClient(app) as client,
+            ):
+                client.cookies.set("neoqbot_session", "test-session")
+                response = client.post(
+                    "/api/gui/settings/llm/test",
+                    headers={"X-CSRF-Token": "test-csrf"},
+                    json={
+                        "driver": "openai_compatible",
+                        "base_url": "https://typed.example/v1",
+                        "api_key": "typed-key",
+                        "model": "typed-model",
+                        "timeout_seconds": 15,
+                        "json_response_format": True,
+                    },
+                )
+                visible_settings = client.get("/api/gui/settings").json()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["model"], "typed-model")
+        test_connection.assert_awaited_once()
+        self.assertEqual(visible_settings["config"]["llm"]["api_key"], "***")
+        self.assertEqual(app.state.container.settings.llm.api_key, "saved-key")
+
+    def test_llm_url_and_key_can_be_updated_while_other_sensitive_settings_are_locked(self) -> None:
+        config = assignment_settings().model_dump(mode="json")
+        config["llm"].update(
+            {
+                "driver": "openai_compatible",
+                "base_url": "https://old.example/v1",
+                "api_key": "old-key",
+                "model": "old-model",
+            }
+        )
+        current = Settings.model_validate(config)
+        submitted = current.redacted_dict()
+        submitted["llm"].update(
+            {
+                "base_url": "https://new.example/v1",
+                "api_key": "new-key",
+                "model": "new-model",
+            }
+        )
+
+        merged = _preserve_masked_secrets(submitted, current)
+
+        self.assertEqual(merged["llm"]["base_url"], "https://new.example/v1")
+        self.assertEqual(merged["llm"]["api_key"], "new-key")
+
     def test_platform_settings_cannot_modify_bots_or_orchestration(self) -> None:
         current = assignment_settings()
         submitted = current.model_dump(mode="json")
