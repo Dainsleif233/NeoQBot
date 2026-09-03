@@ -65,6 +65,16 @@ class EventHandler:
             )
             return await join_service.handle(request)
 
+        if post_type == "notice":
+            notice_type = event.get("notice_type")
+            if notice_type == "group_increase":
+                sub_type = event.get("sub_type")
+                if sub_type == "approve":
+                    return await join_service.record_admin_approval(event)
+                # "invite" = an admin invited a member (not a join-request resolution); ignore.
+                return "ignored"
+            return "ignored"
+
         if post_type == "message":
             text = onebot_plain_text(event.get("message", event.get("raw_message", "")))
             message_type = event.get("message_type")
