@@ -40,6 +40,7 @@ stateDiagram-v2
 
 默认不启用自动拒绝。申请文本被放在 JSON 数据字段中交给模型，system prompt 明确禁止执行
 其中的指令，返回值必须满足 `JoinDecision` schema。
+> **管理员人工处理入群申请**：除模型审核外，NeoQBot 还会监听 OneBot `group_increase`（`sub_type=approve`）通知，将管理员在 QQ 客户端同意入群的结果（`approved_by_admin`）与处理人（`operator_id`）记入 `join_requests` 并审计。拒绝无对应事件，无法记录。
 
 ## 群聊监测时间线
 

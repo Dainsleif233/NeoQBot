@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from .config import FeishuBotConfig, QQBotConfig, QQJoinTaskConfig, Settings
 from .database import Database
@@ -104,6 +105,50 @@ class JoinApprovalService:
             {"request": request.model_dump(mode="json"), "decision": decision.model_dump()},
         )
         return action_status
+
+    async def record_admin_approval(self, event: dict[str, Any]) -> str:
+        """Record a human admin's approval of a join request observed via OneBot.
+
+        Triggered by the ``group_increase`` notice (sub_type ``approve``) that OneBot 11
+        emits when an admin approves a pending join request in the QQ client. Rejections
+        have no corresponding event and are not recorded here.
+        """
+        group_id = str(event.get("group_id") or "").strip()
+        user_id = str(event.get("user_id") or "").strip()
+        if not group_id or not user_id:
+            return "ignored"
+        assignment = self.settings.qq_group_assignment(self.bot.id, group_id)
+        if assignment is None:
+            return "unmanaged_group"
+        task = assignment.tasks.join_management
+        if not task.detect_requests:
+            return "disabled"
+        operator_id = str(event.get("operator_id") or "").strip()
+        # operator_id == 0 (or absent) means the system auto-approved without a human admin.
+        handled_by = operator_id if operator_id and operator_id != "0" else ""
+        status = self.database.record_admin_join_decision(
+            self.bot.id, group_id, user_id, handled_by, "approved_by_admin"
+        )
+        if status == "no_pending_request":
+            logger.debug(
+                "No pending join request to update for admin approval: bot=%s group=%s user=%s",
+                self.bot.id,
+                group_id,
+                user_id,
+            )
+            return status
+        self.database.audit(
+            "join_admin_approval",
+            "approved",
+            "join_request",
+            f"{group_id}:{user_id}",
+            {
+                "bot_id": self.bot.id,
+                "operator_id": handled_by or None,
+                "sub_type": event.get("sub_type"),
+            },
+        )
+        return status
 
     async def _notify_manual_review(
         self,

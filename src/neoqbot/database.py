@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS join_requests (
     confidence REAL,
     reason TEXT,
     action_status TEXT NOT NULL DEFAULT 'received',
+    handled_by TEXT NOT NULL DEFAULT '',
+    handled_at TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL,
     UNIQUE(bot_id, request_flag)
 );
@@ -169,6 +171,12 @@ class Database:
                 )
             self._ensure_column(
                 connection, "group_messages", "sender_name", "TEXT NOT NULL DEFAULT ''"
+            )
+            self._ensure_column(
+                connection, "join_requests", "handled_by", "TEXT NOT NULL DEFAULT ''"
+            )
+            self._ensure_column(
+                connection, "join_requests", "handled_at", "TEXT NOT NULL DEFAULT ''"
             )
             self._ensure_column(connection, "announcements", "sync_claimed_at", "TEXT")
             self._ensure_column(
@@ -582,6 +590,53 @@ class Database:
                 """,
                 (utc_now().isoformat(), request.bot_id, request.flag),
             )
+
+    def record_admin_join_decision(
+        self,
+        bot_id: str,
+        group_id: str,
+        user_id: str,
+        handled_by: str,
+        action_status: str,
+    ) -> str:
+        """Record that a human group admin resolved a pending join request.
+
+        OneBot 11 only emits ``group_increase`` (sub_type ``approve``) when an admin
+        approves a join request; there is no event for rejections. ``handled_by`` is the
+        admin QQ number taken from ``operator_id`` (empty when the system auto-approved).
+        Returns the resulting status, or ``no_pending_request`` when no awaiting-human-
+        decision row exists for this (bot, group, user).
+
+        Correlation is best-effort: ``group_increase`` carries no request ``flag``, so the
+        pending row is matched only by ``(bot_id, group_id, user_id)`` and the most recent
+        awaiting-human-decision row is selected (``ORDER BY id DESC LIMIT 1``). When the
+        same user submits several join requests to the same group, attributing the approval
+        to the latest pending request may be ambiguous; this is an inherent protocol
+        limitation rather than a precise one-to-one mapping.
+        """
+        with self._lock, self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT id FROM join_requests
+                WHERE bot_id = ? AND group_id = ? AND user_id = ?
+                  AND action_status IN ('received', 'detected', 'manual_review')
+                ORDER BY id DESC LIMIT 1
+                """,
+                (bot_id, group_id, user_id),
+            ).fetchone()
+            if row is None:
+                return "no_pending_request"
+            now = utc_now().isoformat()
+            connection.execute(
+                """
+                UPDATE join_requests
+                SET decision = 'approve', action_status = ?, handled_by = ?,
+                    handled_at = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (action_status, handled_by, now, now, row["id"]),
+            )
+            return action_status
 
     def save_message(self, message: GroupMessage) -> bool:
         with self._lock, self._connect() as connection:
@@ -1572,7 +1627,7 @@ class Database:
                 "join_requests",
                 "received_at",
                 (),
-                ("group_id", "user_id", "comment", "decision", "action_status"),
+                ("group_id", "user_id", "comment", "decision", "action_status", "handled_by"),
             ),
             "messages": (
                 "group_messages",
