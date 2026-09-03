@@ -31,9 +31,7 @@ from .config import (
     resolve_secret,
 )
 from .container import Container
-from .models import JoinRequest, utc_now
 from .security import FailureLimiter
-from .services import JoinApprovalService
 
 
 class LoginPayload(BaseModel):
@@ -1104,49 +1102,6 @@ def register_gui(
         else:
             raise HTTPException(status_code=404, detail="未知任务")
         return {"ok": True, "result": result}
-
-    @app.post("/api/gui/orchestration/group/join/review")
-    async def gui_review_join_request(
-        session: GuiSession = Depends(ready_admin_csrf),
-        group_id: str = Query(min_length=1, max_length=160),
-        flag: str = Query(min_length=1, max_length=160),
-        approve: bool = Query(...),
-        reason: str = Query(default="", max_length=120),
-    ) -> dict[str, Any]:
-        database = get_container().database
-        row = await asyncio.to_thread(database.get_join_request, flag, group_id=group_id)
-        if row is None:
-            raise HTTPException(status_code=404, detail="未找到对应的入群申请")
-        bot_id = str(row.get("bot_id") or "default")
-        qq_client = get_container().qq_clients.get(bot_id)
-        if qq_client is None:
-            raise HTTPException(status_code=409, detail="该申请对应的 QQ Bot 不可用")
-        bot = get_settings().qq_bot(bot_id)
-        if bot is None:
-            raise HTTPException(status_code=409, detail="该申请对应的 QQ Bot 不存在")
-        try:
-            received_at = (
-                datetime.fromisoformat(row["received_at"]) if row.get("received_at") else utc_now()
-            )
-        except ValueError:
-            received_at = utc_now()
-        request = JoinRequest(
-            bot_id=bot_id,
-            event_id=str(row.get("event_id") or ""),
-            flag=str(row.get("request_flag") or flag),
-            group_id=str(row.get("group_id") or group_id),
-            user_id=str(row.get("user_id") or ""),
-            comment=str(row.get("comment") or ""),
-            sub_type=str(row.get("sub_type") or "add"),
-            received_at=received_at,
-        )
-        service = JoinApprovalService(
-            get_settings(), database, get_container().engine, qq_client, bot
-        )
-        action_status = await service.apply_manual_decision(
-            request, approve, reason, session.username
-        )
-        return {"ok": True, "action_status": action_status, "reviewer": session.username}
 
     def qq_qrcode_path(bot_id: str | None) -> Path:
         bot = get_settings().qq_bot(bot_id)

@@ -31,7 +31,6 @@ CREATE TABLE IF NOT EXISTS join_requests (
     confidence REAL,
     reason TEXT,
     action_status TEXT NOT NULL DEFAULT 'received',
-    reviewer TEXT,
     updated_at TEXT NOT NULL,
     UNIQUE(bot_id, request_flag)
 );
@@ -171,7 +170,6 @@ class Database:
             self._ensure_column(
                 connection, "group_messages", "sender_name", "TEXT NOT NULL DEFAULT ''"
             )
-            self._ensure_column(connection, "join_requests", "reviewer", "TEXT")
             self._ensure_column(connection, "announcements", "sync_claimed_at", "TEXT")
             self._ensure_column(
                 connection, "announcements", "is_current", "INTEGER NOT NULL DEFAULT 1"
@@ -555,18 +553,13 @@ class Database:
             return cursor.rowcount == 1
 
     def update_join_decision(
-        self,
-        request: JoinRequest,
-        decision: JoinDecision,
-        action_status: str,
-        reviewer: str = "",
+        self, request: JoinRequest, decision: JoinDecision, action_status: str
     ) -> None:
         with self._lock, self._connect() as connection:
             connection.execute(
                 """
                 UPDATE join_requests
-                SET decision = ?, confidence = ?, reason = ?, action_status = ?,
-                    reviewer = ?, updated_at = ?
+                SET decision = ?, confidence = ?, reason = ?, action_status = ?, updated_at = ?
                 WHERE bot_id = ? AND request_flag = ?
                 """,
                 (
@@ -574,35 +567,11 @@ class Database:
                     decision.confidence,
                     decision.reason,
                     action_status,
-                    reviewer or None,
                     utc_now().isoformat(),
                     request.bot_id,
                     request.flag,
                 ),
             )
-
-    def get_join_request(
-        self,
-        flag: str,
-        *,
-        group_id: str | None = None,
-        bot_id: str | None = None,
-    ) -> dict[str, Any] | None:
-        conditions = ["request_flag = ?"]
-        values: list[object] = [flag]
-        if group_id is not None:
-            conditions.append("group_id = ?")
-            values.append(group_id)
-        if bot_id is not None:
-            conditions.append("bot_id = ?")
-            values.append(bot_id)
-        where = " AND ".join(conditions)
-        with self._lock, self._connect() as connection:
-            row = connection.execute(
-                f"SELECT * FROM join_requests WHERE {where} ORDER BY id DESC LIMIT 1",
-                tuple(values),
-            ).fetchone()
-        return dict(row) if row else None
 
     def mark_join_detected(self, request: JoinRequest) -> None:
         with self._lock, self._connect() as connection:
@@ -1603,7 +1572,7 @@ class Database:
                 "join_requests",
                 "received_at",
                 (),
-                ("group_id", "user_id", "comment", "decision", "action_status", "reviewer"),
+                ("group_id", "user_id", "comment", "decision", "action_status"),
             ),
             "messages": (
                 "group_messages",
