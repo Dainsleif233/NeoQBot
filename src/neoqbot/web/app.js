@@ -1126,6 +1126,10 @@
       manual_review: "待人工审核",
       approved: "已同意",
       rejected: "已拒绝",
+      manual_approve: "已人工同意",
+      manual_reject: "已人工拒绝",
+      dry_run_manual_approve: "演练·人工同意",
+      dry_run_manual_reject: "演练·人工拒绝",
       dry_run: "演练未执行",
       action_failed: "执行失败"
     }[value] || value || "已登记";
@@ -1211,11 +1215,44 @@
       var comment = document.createElement("p");
       comment.textContent = record.comment || "未填写入群说明";
       var result = document.createElement("footer");
-      result.textContent = record.decision ? "判断：" + joinDecisionLabel(record.decision) + " · 置信度 " + (record.confidence === null ? "-" : record.confidence) + " · " + (record.reason || "无补充原因") : "尚未形成审核结论";
-      body.append(heading, comment, result);
+      var reviewer = record.reviewer ? " · 审核人 " + record.reviewer : "";
+      result.textContent = (record.decision ? "判断：" + joinDecisionLabel(record.decision) + " · 置信度 " + (record.confidence === null ? "-" : record.confidence) + " · " + (record.reason || "无补充原因") : "尚未形成审核结论") + reviewer;
+      var pending = status === "received" || status === "detected" || status === "manual_review";
+      if (pending && record.request_flag) {
+        var actions = document.createElement("div");
+        actions.className = "group-record-actions";
+        ["approve", "reject"].forEach(function (action) {
+          var button = document.createElement("button");
+          button.type = "button";
+          button.className = "button";
+          button.textContent = action === "approve" ? "同意" : "拒绝";
+          button.addEventListener("click", function () {
+            reviewJoinRequest(record.request_flag, action === "approve");
+          });
+          actions.appendChild(button);
+        });
+        body.append(heading, comment, result, actions);
+      } else {
+        body.append(heading, comment, result);
+      }
       card.append(avatar, body);
       target.appendChild(card);
     });
+  }
+
+  async function reviewJoinRequest(flag, approve) {
+    try {
+      var parameters = groupWorkspaceParameters({
+        flag: flag,
+        approve: approve ? "true" : "false",
+        reason: approve ? "管理员同意" : "管理员拒绝"
+      });
+      await api("/api/gui/orchestration/group/join/review?" + parameters.toString(), { method: "POST" });
+      showToast("已记录审核结果");
+      await loadGroupWorkspaceRecords(false);
+    } catch (error) {
+      showToast(error.message, true);
+    }
   }
 
   function renderGroupModeration(records, target) {
