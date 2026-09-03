@@ -16,10 +16,6 @@ from .recording import LocalMessageRecorder
 
 logger = logging.getLogger(__name__)
 
-# Reviewer recorded when the automated pipeline (model + auto action) reviews a
-# join request. Human reviews record the GUI operator username instead.
-AUTOMATED_REVIEWER = "system"
-
 
 class JoinApprovalService:
     def __init__(
@@ -99,82 +95,13 @@ class JoinApprovalService:
                 )
             except Exception:
                 logger.exception("Failed to notify administrators about join action failure")
-        reviewer = AUTOMATED_REVIEWER if action_status != "manual_review" else ""
-        self.database.update_join_decision(request, decision, action_status, reviewer=reviewer)
+        self.database.update_join_decision(request, decision, action_status)
         self.database.audit(
             "join_review",
             action_status,
             "join_request",
             request.flag,
-            {
-                "request": request.model_dump(mode="json"),
-                "decision": decision.model_dump(),
-                "reviewer": reviewer,
-            },
-        )
-        return action_status
-
-    async def apply_manual_decision(
-        self, request: JoinRequest, approve: bool, reason: str, reviewer: str
-    ) -> str:
-        """Record an administrator's manual approve/reject decision for a join request.
-
-        The reviewer is the GUI operator username so the audit trail captures who
-        actually performed the join review. Automated decisions record ``system``
-        instead (see :data:`AUTOMATED_REVIEWER`).
-        """
-        # An already-decided request should not re-invoke the (likely expired) OneBot
-        # flag. Admins may still retry after a prior failure (action_failed).
-        existing = self.database.get_join_request(
-            request.flag, group_id=request.group_id, bot_id=request.bot_id
-        )
-        terminal_states = {
-            "approved",
-            "rejected",
-            "manual_approve",
-            "manual_reject",
-            "dry_run_approve",
-            "dry_run_reject",
-            "dry_run_manual_approve",
-            "dry_run_manual_reject",
-        }
-        if existing is not None and existing.get("action_status") in terminal_states:
-            return str(existing["action_status"])
-
-        decision = JoinDecision(
-            decision="approve" if approve else "reject",
-            confidence=1.0,
-            reason=reason or "管理员手动审核",
-            matched_rules=["manual_review"],
-        )
-        dry_run = self.settings.app.dry_run
-        approve_status = "dry_run_manual_approve" if dry_run else "manual_approve"
-        reject_status = "dry_run_manual_reject" if dry_run else "manual_reject"
-        action_status = approve_status if approve else reject_status
-        try:
-            await self.qq.approve_join(request, approve=approve, reason=reason[:120])
-        except Exception as exc:
-            logger.exception("Manual join action failed")
-            action_status = "action_failed"
-            self.database.audit(
-                "join_action",
-                "failed",
-                "join_request",
-                request.flag,
-                {"error": str(exc), "reviewer": reviewer, "manual": True},
-            )
-        self.database.update_join_decision(request, decision, action_status, reviewer=reviewer)
-        self.database.audit(
-            "join_review",
-            action_status,
-            "join_request",
-            request.flag,
-            {
-                "reviewer": reviewer,
-                "manual": True,
-                "request": request.model_dump(mode="json"),
-                "decision": decision.model_dump(),
-            },
+            {"request": request.model_dump(mode="json"), "decision": decision.model_dump()},
         )
         return action_status
 
