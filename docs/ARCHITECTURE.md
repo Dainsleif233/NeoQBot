@@ -71,7 +71,8 @@ stateDiagram-v2
 
 ## 数据表
 
-- `join_requests`：OneBot flag 唯一，保存模型决定与实际动作状态；
+- `join_requests`：OneBot flag 唯一，保存模型决定、实际动作状态与审核人（`reviewer`：
+  自动审核记为 `system`，管理员在管理端手动审核记为登录用户名，转人工待处理时为 NULL）；
 - `group_messages`：Bot + 群 ID + 消息 ID 唯一，保存 QQ 号、群名片/昵称、文本与时间并按时间索引；
 - `moderation_runs`：固定窗口唯一，保存完整结构化结果和是否成功告警；
 - `announcements`：公告 ID 版本约束与“群 + 内容哈希 + 发布时间槽”双重去重，保存版本、来源 Bot、
